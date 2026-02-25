@@ -147,6 +147,7 @@ def run_download(job_id: str, url: str, quality: str):
         "postprocessors": postprocessors,
         "quiet": True,
         "no_warnings": True,
+        "nocheckcertificate": True,
     }
 
     try:
@@ -195,6 +196,7 @@ def api_info():
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
+            "nocheckcertificate": True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
