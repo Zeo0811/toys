@@ -92,7 +92,7 @@ def clean_old_jobs():
 
 
 # ──────────────────────────────────────────────
-VERSION = "0.4"
+VERSION = "0.5"
 
 # 下载核心
 # ──────────────────────────────────────────────
@@ -145,6 +145,8 @@ def run_download(job_id: str, url: str, quality: str):
         "quiet": True,
         "no_warnings": True,
         "nocheckcertificate": True,
+        "fixup": "never",        # 禁止 ffmpeg fixup 后处理
+        "prefer_ffmpeg": False,  # 不依赖 ffmpeg
     }
 
     try:
