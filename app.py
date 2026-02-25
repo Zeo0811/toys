@@ -12,6 +12,7 @@ import json
 import time
 import threading
 import subprocess
+import shutil
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, Response, send_file
 
@@ -91,14 +92,17 @@ def clean_old_jobs():
 
 
 # ──────────────────────────────────────────────
+VERSION = "0.5"
+
 # 下载核心
 # ──────────────────────────────────────────────
 
+# 使用预合并单流格式，无需 ffmpeg
 FORMAT_MAP = {
-    "best":  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
-    "1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]",
-    "720p":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
-    "480p":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]",
+    "best":  "best[ext=mp4]/best",
+    "1080p": "best[height<=1080][ext=mp4]/best[height<=1080]",
+    "720p":  "best[height<=720][ext=mp4]/best[height<=720]",
+    "480p":  "best[height<=480][ext=mp4]/best[height<=480]",
     "audio": "bestaudio/best",
 }
 
@@ -131,22 +135,18 @@ def run_download(job_id: str, url: str, quality: str):
             update_job(job_id, status="merging", progress=99)
 
     postprocessors = []
-    if is_audio:
-        postprocessors.append({
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        })
 
     ydl_opts = {
         "format": fmt,
         "outtmpl": str(job_dir / "%(title)s.%(ext)s"),
-        "merge_output_format": "mp4",
         "noplaylist": True,
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
         "quiet": True,
         "no_warnings": True,
+        "nocheckcertificate": True,
+        "fixup": "never",        # 禁止 ffmpeg fixup 后处理
+        "prefer_ffmpeg": False,  # 不依赖 ffmpeg
     }
 
     try:
@@ -179,7 +179,7 @@ def run_download(job_id: str, url: str, quality: str):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", version=VERSION)
 
 
 @app.route("/api/info", methods=["POST"])
@@ -195,6 +195,7 @@ def api_info():
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
+            "nocheckcertificate": True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
