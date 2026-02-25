@@ -1,0 +1,12 @@
+# Render 部署配置
+# 文档: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: video-downloader
+    runtime: python
+    buildCommand: "apt-get install -y ffmpeg && pip install -r requirements.txt"
+    startCommand: "gunicorn -w 1 --threads 8 -b 0.0.0.0:$PORT --timeout 600 app:app"
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
