@@ -70,6 +70,18 @@
       margin-top: 4px;
     }
 
+    .version-badge {
+      display: inline-block;
+      margin-top: 6px;
+      font-size: .7rem;
+      color: var(--text2);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 99px;
+      padding: 2px 8px;
+      letter-spacing: .04em;
+    }
+
     /* ── Card ── */
     .card {
       width: 100%;
@@ -391,6 +403,7 @@
   <div class="logo">📥</div>
   <h1>视频下载器</h1>
   <p>支持 YouTube、B站、Twitter 等主流平台</p>
+  <span class="version-badge">v{{ version }}</span>
 </header>
 
 <!-- URL 输入卡片 -->

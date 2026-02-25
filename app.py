@@ -92,6 +92,8 @@ def clean_old_jobs():
 
 
 # ──────────────────────────────────────────────
+VERSION = "0.4"
+
 # 下载核心
 # ──────────────────────────────────────────────
 
@@ -175,7 +177,7 @@ def run_download(job_id: str, url: str, quality: str):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", version=VERSION)
 
 
 @app.route("/api/info", methods=["POST"])
