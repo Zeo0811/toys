@@ -5,5 +5,3 @@ nixPkgs = ["python312", "ffmpeg"]
 [phases.install]
 cmds = ["pip install -r requirements.txt"]
 
-[start]
-cmd = "gunicorn -w 1 --threads 8 -b 0.0.0.0:$PORT --timeout 600 app:app"
