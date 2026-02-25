@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>视频下载器</title>
+  <style>
+    /* ── Reset & Base ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f0f13;
+      --surface: #1a1a24;
+      --surface2: #22222f;
+      --border: #2e2e42;
+      --accent: #7c6af7;
+      --accent2: #a78bfa;
+      --green: #22c55e;
+      --red: #ef4444;
+      --text: #e8e8f0;
+      --text2: #9090b0;
+      --radius: 16px;
+      --shadow: 0 8px 32px rgba(0,0,0,.5);
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 16px;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: env(safe-area-inset-top, 20px) 16px env(safe-area-inset-bottom, 24px);
+      min-height: 100dvh;
+    }
+
+    /* ── Header ── */
+    header {
+      width: 100%;
+      max-width: 540px;
+      text-align: center;
+      padding: 28px 0 20px;
+    }
+
+    header .logo {
+      font-size: 2rem;
+      margin-bottom: 6px;
+    }
+
+    header h1 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--accent2), var(--accent));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    header p {
+      font-size: .85rem;
+      color: var(--text2);
+      margin-top: 4px;
+    }
+
+    /* ── Card ── */
+    .card {
+      width: 100%;
+      max-width: 540px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    /* ── URL Input ── */
+    .input-wrap {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+
+    .input-wrap input {
+      flex: 1;
+      background: var(--surface2);
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      color: var(--text);
+      font-size: 15px;
+      outline: none;
+      transition: border-color .2s;
+      min-width: 0;
+    }
+
+    .input-wrap input::placeholder { color: var(--text2); }
+    .input-wrap input:focus { border-color: var(--accent); }
+
+    .btn-paste {
+      flex-shrink: 0;
+      background: var(--surface2);
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      padding: 0 14px;
+      color: var(--text2);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all .2s;
+      white-space: nowrap;
+    }
+
+    .btn-paste:active { background: var(--border); }
+
+    /* ── Preview ── */
+    #preview {
+      display: none;
+      margin-top: 16px;
+      gap: 12px;
+      align-items: center;
+    }
+
+    #preview.show { display: flex; }
+
+    #preview img {
+      width: 96px;
+      height: 54px;
+      object-fit: cover;
+      border-radius: 8px;
+      flex-shrink: 0;
+      background: var(--surface2);
+    }
+
+    .preview-meta { flex: 1; min-width: 0; }
+
+    .preview-meta .ptitle {
+      font-size: .9rem;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .preview-meta .pmeta {
+      font-size: .78rem;
+      color: var(--text2);
+      margin-top: 3px;
+    }
+
+    /* ── Quality Selector ── */
+    .section-label {
+      font-size: .8rem;
+      color: var(--text2);
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    .quality-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+    }
+
+    .q-btn {
+      background: var(--surface2);
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 4px;
+      text-align: center;
+      cursor: pointer;
+      transition: all .2s;
+      user-select: none;
+    }
+
+    .q-btn .qlabel {
+      font-size: .85rem;
+      font-weight: 700;
+      display: block;
+    }
+
+    .q-btn .qsub {
+      font-size: .65rem;
+      color: var(--text2);
+      display: block;
+      margin-top: 2px;
+    }
+
+    .q-btn.active {
+      background: rgba(124,106,247,.15);
+      border-color: var(--accent);
+      color: var(--accent2);
+    }
+
+    .q-btn.active .qsub { color: var(--accent2); opacity: .7; }
+
+    /* ── Download Button ── */
+    #btn-download {
+      width: 100%;
+      padding: 16px;
+      border: none;
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--accent), #9f7aea);
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity .2s, transform .1s;
+      margin-top: 4px;
+      letter-spacing: .03em;
+    }
+
+    #btn-download:active { transform: scale(.98); }
+    #btn-download:disabled { opacity: .4; cursor: default; }
+
+    /* ── Progress ── */
+    #progress-wrap {
+      display: none;
+      margin-top: 16px;
+    }
+
+    #progress-wrap.show { display: block; }
+
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    #status-text {
+      font-size: .85rem;
+      color: var(--text2);
+    }
+
+    #pct-text {
+      font-size: .85rem;
+      font-weight: 700;
+      color: var(--accent2);
+    }
+
+    .progress-bar-bg {
+      height: 8px;
+      background: var(--surface2);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+
+    #progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      border-radius: 99px;
+      transition: width .4s ease;
+    }
+
+    .progress-meta {
+      display: flex;
+      gap: 16px;
+      margin-top: 8px;
+      font-size: .78rem;
+      color: var(--text2);
+    }
+
+    /* ── Result ── */
+    #result-wrap {
+      display: none;
+      margin-top: 16px;
+      text-align: center;
+    }
+
+    #result-wrap.show { display: block; }
+
+    .result-icon { font-size: 2.5rem; margin-bottom: 8px; }
+
+    .result-title {
+      font-size: .95rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .result-sub {
+      font-size: .8rem;
+      color: var(--text2);
+      margin-bottom: 16px;
+    }
+
+    #btn-save {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--green);
+      color: #fff;
+      border: none;
+      border-radius: 14px;
+      padding: 14px 28px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity .2s, transform .1s;
+      text-decoration: none;
+    }
+
+    #btn-save:active { transform: scale(.97); }
+
+    .btn-new {
+      display: block;
+      margin: 12px auto 0;
+      background: none;
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      padding: 11px 24px;
+      color: var(--text2);
+      font-size: .9rem;
+      cursor: pointer;
+      transition: border-color .2s, color .2s;
+    }
+
+    .btn-new:hover { border-color: var(--accent); color: var(--accent2); }
+
+    /* ── Error ── */
+    #error-wrap {
+      display: none;
+      margin-top: 12px;
+      background: rgba(239,68,68,.1);
+      border: 1px solid rgba(239,68,68,.3);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: .85rem;
+      color: #fca5a5;
+    }
+
+    #error-wrap.show { display: block; }
+
+    /* ── Tips ── */
+    .tips {
+      max-width: 540px;
+      width: 100%;
+      padding: 0 4px;
+    }
+
+    .tips h3 {
+      font-size: .78rem;
+      color: var(--text2);
+      margin-bottom: 8px;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .tip-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: .8rem;
+      color: var(--text2);
+      margin-bottom: 6px;
+      line-height: 1.5;
+    }
+
+    .tip-icon { flex-shrink: 0; margin-top: 1px; }
+
+    /* ── Spinner ── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">📥</div>
+  <h1>视频下载器</h1>
+  <p>支持 YouTube、B站、Twitter 等主流平台</p>
+</header>
+
+<!-- URL 输入卡片 -->
+<div class="card" id="card-input">
+  <div class="input-wrap">
+    <input type="url" id="url-input" placeholder="粘贴视频链接..." autocomplete="off" autocorrect="off" spellcheck="false" />
+    <button class="btn-paste" id="btn-paste">粘贴</button>
+  </div>
+
+  <!-- 视频预览 -->
+  <div id="preview">
+    <img id="thumb" src="" alt="封面" />
+    <div class="preview-meta">
+      <div class="ptitle" id="ptitle"></div>
+      <div class="pmeta" id="pmeta"></div>
+    </div>
+  </div>
+
+  <!-- 错误提示 -->
+  <div id="error-wrap"></div>
+</div>
+
+<!-- 画质选择卡片 -->
+<div class="card">
+  <div class="section-label">选择画质</div>
+  <div class="quality-grid">
+    <div class="q-btn" data-q="best">
+      <span class="qlabel">最佳</span>
+      <span class="qsub">自动</span>
+    </div>
+    <div class="q-btn active" data-q="1080p">
+      <span class="qlabel">1080p</span>
+      <span class="qsub">全高清</span>
+    </div>
+    <div class="q-btn" data-q="720p">
+      <span class="qlabel">720p</span>
+      <span class="qsub">高清</span>
+    </div>
+    <div class="q-btn" data-q="480p">
+      <span class="qlabel">480p</span>
+      <span class="qsub">标清</span>
+    </div>
+    <div class="q-btn" data-q="audio">
+      <span class="qlabel">MP3</span>
+      <span class="qsub">仅音频</span>
+    </div>
+  </div>
+</div>
+
+<!-- 下载按钮 + 进度 -->
+<div class="card">
+  <button id="btn-download">开始下载</button>
+
+  <!-- 进度 -->
+  <div id="progress-wrap">
+    <div class="progress-header">
+      <span id="status-text">准备中...</span>
+      <span id="pct-text">0%</span>
+    </div>
+    <div class="progress-bar-bg">
+      <div id="progress-bar"></div>
+    </div>
+    <div class="progress-meta">
+      <span id="speed-text"></span>
+      <span id="eta-text"></span>
+    </div>
+  </div>
+
+  <!-- 完成 -->
+  <div id="result-wrap">
+    <div class="result-icon">✅</div>
+    <div class="result-title" id="result-title">下载完成！</div>
+    <div class="result-sub">点击下方按钮保存到设备</div>
+    <a id="btn-save" href="#" download>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      保存到设备
+    </a>
+    <button class="btn-new" id="btn-new">继续下载</button>
+  </div>
+</div>
+
+<!-- 使用提示 -->
+<div class="tips">
+  <h3>使用说明</h3>
+  <div class="tip-item"><span class="tip-icon">📱</span><span>下载完成后点击「保存到设备」，文件将保存到本地</span></div>
+  <div class="tip-item"><span class="tip-icon">🖼️</span><span>iOS：打开文件 → 点击分享 → 存储到相册</span></div>
+  <div class="tip-item"><span class="tip-icon">🎵</span><span>选择 MP3 可仅下载音频，适合收听歌曲</span></div>
+  <div class="tip-item"><span class="tip-icon">🔗</span><span>支持 YouTube、B站、Twitter/X、Instagram 等</span></div>
+</div>
+
+<script>
+  // ── 状态 ──
+  let selectedQuality = '1080p';
+  let currentJobId = null;
+  let sseSource = null;
+  let infoTimer = null;
+
+  // ── DOM ──
+  const urlInput    = document.getElementById('url-input');
+  const btnPaste    = document.getElementById('btn-paste');
+  const btnDownload = document.getElementById('btn-download');
+  const preview     = document.getElementById('preview');
+  const thumb       = document.getElementById('thumb');
+  const ptitle      = document.getElementById('ptitle');
+  const pmeta       = document.getElementById('pmeta');
+  const errorWrap   = document.getElementById('error-wrap');
+  const progressWrap= document.getElementById('progress-wrap');
+  const resultWrap  = document.getElementById('result-wrap');
+  const progressBar = document.getElementById('progress-bar');
+  const pctText     = document.getElementById('pct-text');
+  const statusText  = document.getElementById('status-text');
+  const speedText   = document.getElementById('speed-text');
+  const etaText     = document.getElementById('eta-text');
+  const resultTitle = document.getElementById('result-title');
+  const btnSave     = document.getElementById('btn-save');
+  const btnNew      = document.getElementById('btn-new');
+
+  // ── 画质选择 ──
+  document.querySelectorAll('.q-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.q-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      selectedQuality = btn.dataset.q;
+    });
+  });
+
+  // ── 粘贴 ──
+  btnPaste.addEventListener('click', async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      urlInput.value = text.trim();
+      urlInput.dispatchEvent(new Event('input'));
+    } catch {
+      urlInput.focus();
+    }
+  });
+
+  // ── URL 变化 → 获取视频信息 ──
+  urlInput.addEventListener('input', () => {
+    clearTimeout(infoTimer);
+    hideError();
+    const url = urlInput.value.trim();
+    if (!url || !url.startsWith('http')) {
+      preview.classList.remove('show');
+      return;
+    }
+    infoTimer = setTimeout(() => fetchInfo(url), 800);
+  });
+
+  async function fetchInfo(url) {
+    try {
+      const res = await fetch('/api/info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+      if (data.error) { preview.classList.remove('show'); return; }
+
+      thumb.src = data.thumbnail || '';
+      ptitle.textContent = data.title || '';
+      pmeta.textContent = [data.uploader, data.duration].filter(Boolean).join('  ·  ');
+      preview.classList.add('show');
+    } catch {
+      preview.classList.remove('show');
+    }
+  }
+
+  // ── 开始下载 ──
+  btnDownload.addEventListener('click', startDownload);
+
+  async function startDownload() {
+    const url = urlInput.value.trim();
+    if (!url) { showError('请先输入视频链接'); return; }
+
+    hideError();
+    setDownloading(true);
+    progressWrap.classList.add('show');
+    resultWrap.classList.remove('show');
+    setProgress(0, '连接中...');
+
+    try {
+      const res = await fetch('/api/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, quality: selectedQuality }),
+      });
+      const data = await res.json();
+      if (data.error) { showError(data.error); setDownloading(false); return; }
+
+      currentJobId = data.job_id;
+      listenProgress(currentJobId);
+    } catch (e) {
+      showError('网络错误：' + e.message);
+      setDownloading(false);
+    }
+  }
+
+  function listenProgress(jobId) {
+    if (sseSource) sseSource.close();
+
+    sseSource = new EventSource(`/api/progress/${jobId}`);
+
+    sseSource.onmessage = (e) => {
+      const job = JSON.parse(e.data);
+
+      if (job.status === 'downloading') {
+        setProgress(job.progress, '下载中');
+        speedText.textContent = job.speed ? `速度：${job.speed}` : '';
+        etaText.textContent   = job.eta   ? `剩余：${job.eta}`  : '';
+      } else if (job.status === 'merging') {
+        setProgress(99, '合并中...');
+        speedText.textContent = '';
+        etaText.textContent   = '';
+      } else if (job.status === 'done') {
+        sseSource.close();
+        setProgress(100, '完成');
+        setTimeout(() => showResult(jobId, job.title, job.filename), 400);
+      } else if (job.status === 'error') {
+        sseSource.close();
+        showError(job.error || '下载失败');
+        setDownloading(false);
+        progressWrap.classList.remove('show');
+      }
+    };
+
+    sseSource.onerror = () => {
+      sseSource.close();
+    };
+  }
+
+  function showResult(jobId, title, filename) {
+    setDownloading(false);
+    progressWrap.classList.remove('show');
+    resultWrap.classList.add('show');
+    resultTitle.textContent = title ? `《${title}》` : '下载完成！';
+    btnSave.href = `/api/file/${jobId}`;
+    btnSave.download = filename || 'video.mp4';
+  }
+
+  // ── 继续下载 ──
+  btnNew.addEventListener('click', () => {
+    urlInput.value = '';
+    preview.classList.remove('show');
+    resultWrap.classList.remove('show');
+    progressWrap.classList.remove('show');
+    hideError();
+    setProgress(0, '准备中...');
+    currentJobId = null;
+    urlInput.focus();
+  });
+
+  // ── 辅助 ──
+  function setProgress(pct, label) {
+    progressBar.style.width = pct + '%';
+    pctText.textContent = Math.round(pct) + '%';
+    statusText.textContent = label;
+  }
+
+  function setDownloading(on) {
+    btnDownload.disabled = on;
+    btnDownload.innerHTML = on
+      ? '<span class="spinner"></span>下载中...'
+      : '开始下载';
+  }
+
+  function showError(msg) {
+    errorWrap.textContent = '⚠️ ' + msg;
+    errorWrap.classList.add('show');
+  }
+
+  function hideError() {
+    errorWrap.classList.remove('show');
+  }
+
+  // iOS Safari：长按保存提示
+  btnSave.addEventListener('click', () => {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    if (isIOS) {
+      setTimeout(() => {
+        alert('提示：文件已下载到"文件"App，可从文件 App 保存到相册。');
+      }, 1000);
+    }
+  });
+</script>
+</body>
+</html>
