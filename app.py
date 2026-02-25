@@ -12,6 +12,7 @@ import json
 import time
 import threading
 import subprocess
+import shutil
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, Response, send_file
 
@@ -94,13 +95,25 @@ def clean_old_jobs():
 # 下载核心
 # ──────────────────────────────────────────────
 
-FORMAT_MAP = {
-    "best":  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
-    "1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]",
-    "720p":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
-    "480p":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]",
-    "audio": "bestaudio/best",
-}
+HAS_FFMPEG = shutil.which("ffmpeg") is not None
+
+if HAS_FFMPEG:
+    FORMAT_MAP = {
+        "best":  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+        "1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]",
+        "720p":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
+        "480p":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]",
+        "audio": "bestaudio/best",
+    }
+else:
+    # ffmpeg 不可用时，使用预合并的单流格式（YouTube 通常最高 720p）
+    FORMAT_MAP = {
+        "best":  "best[ext=mp4]/best",
+        "1080p": "best[height<=1080][ext=mp4]/best[height<=1080]",
+        "720p":  "best[height<=720][ext=mp4]/best[height<=720]",
+        "480p":  "best[height<=480][ext=mp4]/best[height<=480]",
+        "audio": "bestaudio/best",
+    }
 
 
 def run_download(job_id: str, url: str, quality: str):
@@ -141,7 +154,7 @@ def run_download(job_id: str, url: str, quality: str):
     ydl_opts = {
         "format": fmt,
         "outtmpl": str(job_dir / "%(title)s.%(ext)s"),
-        "merge_output_format": "mp4",
+        **({"merge_output_format": "mp4"} if HAS_FFMPEG else {}),
         "noplaylist": True,
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
