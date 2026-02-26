@@ -2,17 +2,18 @@
 """
 移动端视频下载 Web 应用
 支持 YouTube 及 yt-dlp 兼容的视频网站
-依赖: pip install flask yt-dlp
+依赖: pip install flask yt-dlp deep-translator
 """
 
 import os
+import re
 import sys
 import uuid
 import json
 import time
+import shutil
 import threading
 import subprocess
-import shutil
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, Response, send_file
 
@@ -28,6 +29,11 @@ def ensure_deps():
     except ImportError:
         print("正在安装 flask ...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "flask"])
+    try:
+        import deep_translator
+    except ImportError:
+        print("正在安装 deep-translator ...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "deep-translator"])
 
 ensure_deps()
 
@@ -50,7 +56,7 @@ jobs_lock = threading.Lock()
 def make_job(job_id: str):
     with jobs_lock:
         jobs[job_id] = {
-            "status": "pending",   # pending | downloading | merging | done | error
+            "status": "pending",   # pending | downloading | translating | burning | done | error
             "progress": 0,
             "speed": "",
             "eta": "",
@@ -92,7 +98,7 @@ def clean_old_jobs():
 
 
 # ──────────────────────────────────────────────
-VERSION = "0.6"
+VERSION = "0.7"
 
 # 下载核心
 # ──────────────────────────────────────────────
@@ -107,14 +113,165 @@ FORMAT_MAP = {
 }
 
 
-def run_download(job_id: str, url: str, quality: str):
+# ──────────────────────────────────────────────
+# 字幕相关工具
+# ──────────────────────────────────────────────
+
+def _find_subtitle(job_dir: Path) -> Path | None:
+    """在 job_dir 中查找字幕文件，优先返回中文，其次英文，最后任意字幕。"""
+    priority = [".zh-Hans.srt", ".zh-TW.srt", ".zh.srt",
+                ".zh-Hans.vtt", ".zh-TW.vtt", ".zh.vtt",
+                ".en.srt", ".en-US.srt", ".en.vtt", ".en-US.vtt"]
+    for suffix in priority:
+        matches = list(job_dir.glob(f"*{suffix}"))
+        if matches:
+            return matches[0]
+    # 任意字幕
+    for ext in ("*.srt", "*.vtt"):
+        matches = list(job_dir.glob(ext))
+        if matches:
+            return matches[0]
+    return None
+
+
+def _is_chinese_subtitle(path: Path) -> bool:
+    """判断字幕文件名是否已是中文（zh）字幕。"""
+    name = path.name.lower()
+    return any(tag in name for tag in (".zh-hans.", ".zh-tw.", ".zh."))
+
+
+def _convert_vtt_to_srt(vtt_path: Path) -> Path:
+    """将 VTT 字幕转换为 SRT 格式（通过 ffmpeg）。"""
+    srt_path = vtt_path.with_suffix(".srt")
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(vtt_path), str(srt_path)],
+        capture_output=True,
+    )
+    return srt_path if srt_path.exists() else vtt_path
+
+
+def _translate_srt_to_chinese(srt_path: Path) -> Path:
+    """
+    将 SRT 字幕翻译为简体中文。
+    返回翻译后的 SRT 文件路径；如遇任何错误则返回原始路径。
+    """
+    try:
+        from deep_translator import GoogleTranslator
+    except ImportError:
+        return srt_path
+
+    try:
+        content = srt_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return srt_path
+
+    # 解析 SRT：提取 (序号行, 时间轴行, 文本行)
+    block_re = re.compile(
+        r"(\d+)\s*\n"
+        r"(\d{2}:\d{2}:\d{2}[,\.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*\n"
+        r"((?:.+\n?)+)",
+        re.MULTILINE,
+    )
+    matches = list(block_re.finditer(content))
+    if not matches:
+        return srt_path
+
+    texts = [m.group(3).strip() for m in matches]
+
+    # 分批翻译（每批最多 15 段，用罕见分隔符拼接）
+    SEPARATOR = "\n◆◆◆\n"
+    BATCH_SIZE = 15
+    translated: list[str] = [""] * len(texts)
+
+    for start in range(0, len(texts), BATCH_SIZE):
+        batch = texts[start: start + BATCH_SIZE]
+        combined = SEPARATOR.join(batch)
+
+        # 若拼合后超长，逐条翻译
+        if len(combined) > 4500:
+            for i, text in enumerate(batch):
+                try:
+                    t = GoogleTranslator(source="auto", target="zh-CN").translate(
+                        text[:4000]
+                    )
+                    translated[start + i] = t or text
+                except Exception:
+                    translated[start + i] = text
+        else:
+            try:
+                result = GoogleTranslator(source="auto", target="zh-CN").translate(combined)
+                # 按分隔符切回（允许翻译后分隔符有轻微变化）
+                parts = re.split(r"◆+", result or "")
+                for i, part in enumerate(parts):
+                    if i < len(batch):
+                        translated[start + i] = part.strip()
+            except Exception:
+                for i, text in enumerate(batch):
+                    translated[start + i] = text
+
+        # 填补空缺
+        for i in range(start, min(start + BATCH_SIZE, len(texts))):
+            if not translated[i]:
+                translated[i] = texts[i]
+
+        time.sleep(0.3)  # 避免请求过于密集
+
+    # 重建 SRT
+    out_blocks = [
+        f"{m.group(1)}\n{m.group(2)}\n{translated[i]}\n"
+        for i, m in enumerate(matches)
+    ]
+    out_path = srt_path.parent / (srt_path.stem + ".zh.srt")
+    out_path.write_text("\n".join(out_blocks), encoding="utf-8")
+    return out_path
+
+
+def _burn_subtitle(video_path: Path, sub_path: Path, output_path: Path) -> None:
+    """用 ffmpeg 将字幕硬烧录到视频。"""
+    # 将字幕复制为简单文件名，避免路径特殊字符影响 ffmpeg 过滤器
+    simple_sub = video_path.parent / "burn_sub.srt"
+    shutil.copy(str(sub_path), str(simple_sub))
+
+    style = (
+        "FontSize=26,"
+        "PrimaryColour=&H00ffffff,"
+        "OutlineColour=&H00000000,"
+        "Outline=2,"
+        "Shadow=1,"
+        "Bold=0"
+    )
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vf", f"subtitles=burn_sub.srt:force_style='{style}'",
+        "-c:a", "copy",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "23",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, cwd=str(video_path.parent))
+    simple_sub.unlink(missing_ok=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            "ffmpeg 字幕烧录失败：" + result.stderr.decode(errors="replace")[-400:]
+        )
+
+
+# ──────────────────────────────────────────────
+# 下载主逻辑
+# ──────────────────────────────────────────────
+
+def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = False):
     job_dir = DOWNLOAD_DIR / job_id
     job_dir.mkdir(exist_ok=True)
 
     fmt = FORMAT_MAP.get(quality, FORMAT_MAP["best"])
     is_audio = quality == "audio"
 
-    downloaded_path: list = []
+    # 音频模式不支持字幕烧录
+    if is_audio:
+        burn_subtitle = False
 
     def progress_hook(d):
         if d["status"] == "downloading":
@@ -131,7 +288,6 @@ def run_download(job_id: str, url: str, quality: str):
                 eta=d.get("_eta_str", "").strip(),
             )
         elif d["status"] == "finished":
-            downloaded_path.append(d["filename"])
             update_job(job_id, status="merging", progress=99)
 
     postprocessors = []
@@ -155,17 +311,57 @@ def run_download(job_id: str, url: str, quality: str):
     if not is_audio:
         ydl_opts["merge_output_format"] = "mp4"
 
+    # 字幕下载选项
+    if burn_subtitle:
+        ydl_opts.update({
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            # 优先中文，退而求其次英文
+            "subtitleslangs": ["zh-Hans", "zh-TW", "zh", "en", "en-US"],
+            "subtitlesformat": "srt/vtt/best",
+        })
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             title = info.get("title", "video")
 
-        # 找到实际输出文件
-        files = list(job_dir.iterdir())
-        if not files:
-            raise RuntimeError("下载后未找到文件")
+        # 找到视频文件（最大文件）
+        video_files = [
+            f for f in job_dir.iterdir()
+            if f.suffix in (".mp4", ".mkv", ".webm", ".mov", ".avi")
+        ]
+        if not video_files:
+            all_files = list(job_dir.iterdir())
+            if not all_files:
+                raise RuntimeError("下载后未找到文件")
+            output_file = max(all_files, key=lambda f: f.stat().st_size)
+        else:
+            output_file = max(video_files, key=lambda f: f.stat().st_size)
 
-        output_file = max(files, key=lambda f: f.stat().st_size)
+        # ── 字幕烧录流程 ──
+        if burn_subtitle:
+            sub_file = _find_subtitle(job_dir)
+
+            if sub_file:
+                # 如果是 VTT，先转 SRT
+                if sub_file.suffix.lower() == ".vtt":
+                    sub_file = _convert_vtt_to_srt(sub_file)
+
+                # 如果不是中文字幕，翻译
+                if not _is_chinese_subtitle(sub_file):
+                    update_job(job_id, status="translating", progress=99)
+                    sub_file = _translate_srt_to_chinese(sub_file)
+
+                # 烧录
+                update_job(job_id, status="burning", progress=99)
+                burned_output = output_file.parent / (output_file.stem + "_subbed.mp4")
+                _burn_subtitle(output_file, sub_file, burned_output)
+                # 用烧录后文件替代原文件
+                output_file.unlink(missing_ok=True)
+                output_file = burned_output
+            # 若无字幕，忽略烧录步骤，直接返回原视频
+
         update_job(
             job_id,
             status="done",
@@ -224,6 +420,7 @@ def api_download():
     data = request.get_json(force=True)
     url = (data.get("url") or "").strip()
     quality = (data.get("quality") or "best").strip()
+    burn_subtitle = bool(data.get("burn_subtitle", False))
 
     if not url:
         return jsonify({"error": "请输入视频链接"}), 400
@@ -235,7 +432,11 @@ def api_download():
     job_id = uuid.uuid4().hex
     make_job(job_id)
 
-    thread = threading.Thread(target=run_download, args=(job_id, url, quality), daemon=True)
+    thread = threading.Thread(
+        target=run_download,
+        args=(job_id, url, quality, burn_subtitle),
+        daemon=True,
+    )
     thread.start()
 
     return jsonify({"job_id": job_id})
