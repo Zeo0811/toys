@@ -44,6 +44,8 @@ app = Flask(__name__)
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
+COOKIES_FILE = Path("cookies.txt")
+
 # 任务状态存储 { job_id: { status, progress, speed, eta, filename, error } }
 jobs: dict = {}
 jobs_lock = threading.Lock()
@@ -275,6 +277,8 @@ def _download_subtitle(url: str, job_dir: Path) -> Path | None:
         "sleep_interval": 2,
         "max_sleep_interval": 8,
     }
+    if COOKIES_FILE.exists():
+        sub_opts["cookiefile"] = str(COOKIES_FILE)
     for attempt in range(3):
         try:
             with yt_dlp.YoutubeDL(sub_opts) as ydl:
@@ -339,6 +343,8 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
         "no_warnings": True,
         "nocheckcertificate": True,
     }
+    if COOKIES_FILE.exists():
+        ydl_opts["cookiefile"] = str(COOKIES_FILE)
     if not is_audio:
         ydl_opts["merge_output_format"] = "mp4"
 
@@ -505,6 +511,26 @@ def api_file(job_id: str):
         as_attachment=True,
         download_name=filename,
     )
+
+
+@app.route("/api/cookies/status")
+def api_cookies_status():
+    return jsonify({"configured": COOKIES_FILE.exists()})
+
+
+@app.route("/api/cookies/upload", methods=["POST"])
+def api_cookies_upload():
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "未收到文件"}), 400
+    f.save(str(COOKIES_FILE))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/cookies/delete", methods=["POST"])
+def api_cookies_delete():
+    COOKIES_FILE.unlink(missing_ok=True)
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
