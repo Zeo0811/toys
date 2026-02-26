@@ -567,14 +567,18 @@
     <span id="cookie-status-text">未配置 Cookie（遇到机器人验证时需要）</span>
   </div>
   <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-    <label class="btn-cookie-upload" for="cookie-file-input">
-      📂 上传 cookies.txt
+    <button class="btn-cookie-upload" id="btn-import-chrome" data-browser="chrome">🌐 Chrome</button>
+    <button class="btn-cookie-upload" id="btn-import-firefox" data-browser="firefox">🦊 Firefox</button>
+    <button class="btn-cookie-upload" id="btn-import-edge" data-browser="edge">🔷 Edge</button>
+    <label class="btn-cookie-delete" for="cookie-file-input" style="display:inline-block;cursor:pointer;">
+      📂 手动上传
       <input type="file" id="cookie-file-input" accept=".txt" style="display:none" />
     </label>
     <button class="btn-cookie-delete" id="btn-cookie-delete" style="display:none">🗑 移除</button>
   </div>
+  <div id="cookie-import-msg" style="margin-top:6px;font-size:12px;display:none"></div>
   <div style="margin-top:8px;font-size:12px;color:var(--c-sub)">
-    用浏览器插件导出 YouTube Cookie，保存为 cookies.txt 后上传。
+    点击浏览器按钮可从本机浏览器自动读取 YouTube Cookie；或手动上传 cookies.txt 文件。
     <a href="https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp" target="_blank" style="color:#7c9ef8">查看详细教程</a>
   </div>
 </div>
@@ -854,6 +858,7 @@
   const cookieStatusText = document.getElementById('cookie-status-text');
   const cookieFileInput  = document.getElementById('cookie-file-input');
   const btnCookieDelete  = document.getElementById('btn-cookie-delete');
+  const cookieImportMsg  = document.getElementById('cookie-import-msg');
 
   function refreshCookieStatus() {
     fetch('/api/cookies/status').then(r => r.json()).then(d => {
@@ -868,6 +873,38 @@
       }
     });
   }
+
+  function showImportMsg(text, isError) {
+    cookieImportMsg.textContent = text;
+    cookieImportMsg.style.color = isError ? '#f87171' : '#4ade80';
+    cookieImportMsg.style.display = 'block';
+    setTimeout(() => { cookieImportMsg.style.display = 'none'; }, 4000);
+  }
+
+  document.querySelectorAll('[data-browser]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const browser = btn.dataset.browser;
+      const orig = btn.textContent;
+      btn.textContent = '⏳ 读取中…';
+      btn.disabled = true;
+      fetch('/api/cookies/from-browser', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ browser })
+      })
+        .then(r => r.json())
+        .then(d => {
+          if (d.ok) {
+            showImportMsg(`✅ 已从 ${browser} 读取 Cookie`, false);
+            refreshCookieStatus();
+          } else {
+            showImportMsg(`❌ ${d.error || '导入失败'}`, true);
+          }
+        })
+        .catch(() => showImportMsg('❌ 请求失败', true))
+        .finally(() => { btn.textContent = orig; btn.disabled = false; });
+    });
+  });
 
   cookieFileInput.addEventListener('change', () => {
     const file = cookieFileInput.files[0];
