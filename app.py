@@ -258,6 +258,37 @@ def _burn_subtitle(video_path: Path, sub_path: Path, output_path: Path) -> None:
         )
 
 
+def _download_subtitle(url: str, job_dir: Path) -> Path | None:
+    """单独下载字幕，429/网络错误时返回 None（优雅降级）。"""
+    import time
+    sub_opts = {
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": ["zh-Hans", "zh-TW", "zh", "en", "en-US"],
+        "subtitlesformat": "srt/vtt/best",
+        "outtmpl": str(job_dir / "%(title)s.%(ext)s"),
+        "quiet": True,
+        "no_warnings": True,
+        "nocheckcertificate": True,
+        "retries": 3,
+        "sleep_interval": 2,
+        "max_sleep_interval": 8,
+    }
+    for attempt in range(3):
+        try:
+            with yt_dlp.YoutubeDL(sub_opts) as ydl:
+                ydl.download([url])
+            found = _find_subtitle(job_dir)
+            if found:
+                return found
+        except Exception:
+            pass
+        if attempt < 2:
+            time.sleep(2 ** (attempt + 1))  # 2s, 4s
+    return None
+
+
 # ──────────────────────────────────────────────
 # 下载主逻辑
 # ──────────────────────────────────────────────
@@ -311,16 +342,6 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
     if not is_audio:
         ydl_opts["merge_output_format"] = "mp4"
 
-    # 字幕下载选项
-    if burn_subtitle:
-        ydl_opts.update({
-            "writesubtitles": True,
-            "writeautomaticsub": True,
-            # 优先中文，退而求其次英文
-            "subtitleslangs": ["zh-Hans", "zh-TW", "zh", "en", "en-US"],
-            "subtitlesformat": "srt/vtt/best",
-        })
-
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -341,7 +362,10 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
 
         # ── 字幕烧录流程 ──
         if burn_subtitle:
-            sub_file = _find_subtitle(job_dir)
+            # 单独下载字幕，失败时优雅降级（不影响视频）
+            sub_file = _download_subtitle(url, job_dir)
+            if sub_file is None:
+                sub_file = _find_subtitle(job_dir)
 
             if sub_file:
                 # 如果是 VTT，先转 SRT
