@@ -339,6 +339,26 @@
 
     .btn-new:hover { border-color: var(--accent); color: var(--accent2); }
 
+    #cookie-status-row { display:flex; align-items:center; gap:8px; font-size:.9rem; color:var(--text2); }
+    .btn-cookie-upload {
+      display: inline-block;
+      padding: 8px 16px;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 10px;
+      font-size: .85rem;
+      cursor: pointer;
+    }
+    .btn-cookie-delete {
+      padding: 8px 14px;
+      background: none;
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      color: var(--text2);
+      font-size: .85rem;
+      cursor: pointer;
+    }
+
     /* ── Error ── */
     #error-wrap {
       display: none;
@@ -537,6 +557,26 @@
       <span class="switch-thumb"></span>
     </label>
   </label>
+</div>
+
+<!-- Cookie 认证卡片 -->
+<div class="card" id="card-cookie">
+  <div class="section-label">YouTube 认证</div>
+  <div id="cookie-status-row">
+    <span id="cookie-status-icon">⚪</span>
+    <span id="cookie-status-text">未配置 Cookie（遇到机器人验证时需要）</span>
+  </div>
+  <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+    <label class="btn-cookie-upload" for="cookie-file-input">
+      📂 上传 cookies.txt
+      <input type="file" id="cookie-file-input" accept=".txt" style="display:none" />
+    </label>
+    <button class="btn-cookie-delete" id="btn-cookie-delete" style="display:none">🗑 移除</button>
+  </div>
+  <div style="margin-top:8px;font-size:12px;color:var(--c-sub)">
+    用浏览器插件导出 YouTube Cookie，保存为 cookies.txt 后上传。
+    <a href="https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp" target="_blank" style="color:#7c9ef8">使用说明</a>
+  </div>
 </div>
 
 <!-- 下载按钮 + 进度 -->
@@ -808,6 +848,43 @@
       }, 1000);
     }
   });
+
+  // ── Cookie 管理 ──
+  const cookieStatusIcon = document.getElementById('cookie-status-icon');
+  const cookieStatusText = document.getElementById('cookie-status-text');
+  const cookieFileInput  = document.getElementById('cookie-file-input');
+  const btnCookieDelete  = document.getElementById('btn-cookie-delete');
+
+  function refreshCookieStatus() {
+    fetch('/api/cookies/status').then(r => r.json()).then(d => {
+      if (d.configured) {
+        cookieStatusIcon.textContent = '🟢';
+        cookieStatusText.textContent = 'Cookie 已配置，可绕过机器人验证';
+        btnCookieDelete.style.display = 'inline-block';
+      } else {
+        cookieStatusIcon.textContent = '⚪';
+        cookieStatusText.textContent = '未配置 Cookie（遇到机器人验证时需要）';
+        btnCookieDelete.style.display = 'none';
+      }
+    });
+  }
+
+  cookieFileInput.addEventListener('change', () => {
+    const file = cookieFileInput.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    fetch('/api/cookies/upload', { method: 'POST', body: fd })
+      .then(r => r.json())
+      .then(() => { refreshCookieStatus(); cookieFileInput.value = ''; });
+  });
+
+  btnCookieDelete.addEventListener('click', () => {
+    fetch('/api/cookies/delete', { method: 'POST' })
+      .then(() => refreshCookieStatus());
+  });
+
+  refreshCookieStatus();
 </script>
 </body>
 </html>
