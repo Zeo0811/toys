@@ -41,10 +41,23 @@ import yt_dlp
 
 app = Flask(__name__)
 
-DOWNLOAD_DIR = Path("downloads")
+_BASE_DIR = Path(__file__).parent
+DOWNLOAD_DIR = _BASE_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-COOKIES_FILE = Path("cookies.txt")
+COOKIES_FILE = _BASE_DIR / "cookies.txt"
+
+# yt-dlp 通用选项：使用 iOS 客户端绕过机器人检测，同时保留 web 作为备选
+_YDL_BASE_OPTS: dict = {
+    "quiet": True,
+    "no_warnings": True,
+    "nocheckcertificate": True,
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["ios", "web"],
+        }
+    },
+}
 
 # 任务状态存储 { job_id: { status, progress, speed, eta, filename, error } }
 jobs: dict = {}
@@ -268,15 +281,13 @@ def _download_subtitle(url: str, job_dir: Path) -> Path | None:
     """单独下载字幕，429/网络错误时返回 None（优雅降级）。"""
     import time
     sub_opts = {
+        **_YDL_BASE_OPTS,
         "skip_download": True,
         "writesubtitles": True,
         "writeautomaticsub": True,
         "subtitleslangs": ["zh-Hans", "zh-TW", "zh", "en", "en-US"],
         "subtitlesformat": "srt/vtt/best",
         "outtmpl": str(job_dir / "%(title)s.%(ext)s"),
-        "quiet": True,
-        "no_warnings": True,
-        "nocheckcertificate": True,
         "retries": 3,
         "sleep_interval": 2,
         "max_sleep_interval": 8,
@@ -338,14 +349,12 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
         }]
 
     ydl_opts = {
+        **_YDL_BASE_OPTS,
         "format": fmt,
         "outtmpl": str(job_dir / "%(title)s.%(ext)s"),
         "noplaylist": True,
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
-        "quiet": True,
-        "no_warnings": True,
-        "nocheckcertificate": True,
     }
     if COOKIES_FILE.exists():
         ydl_opts["cookiefile"] = str(COOKIES_FILE)
@@ -432,12 +441,9 @@ def api_info():
         return jsonify({"error": "请输入视频链接"}), 400
 
     try:
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "nocheckcertificate": True,
-        }
+        ydl_opts = {**_YDL_BASE_OPTS, "skip_download": True}
+        if COOKIES_FILE.exists():
+            ydl_opts["cookiefile"] = str(COOKIES_FILE)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
