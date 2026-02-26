@@ -533,6 +533,31 @@ def api_cookies_delete():
     return jsonify({"ok": True})
 
 
+@app.route("/api/cookies/from-browser", methods=["POST"])
+def api_cookies_from_browser():
+    data = request.get_json(silent=True) or {}
+    browser = data.get("browser", "").lower().strip()
+    supported = ["chrome", "firefox", "edge", "brave", "opera", "chromium", "vivaldi"]
+    if browser not in supported:
+        return jsonify({"error": f"不支持的浏览器：{browser}"}), 400
+
+    try:
+        ydl_opts = {
+            "cookiesfrombrowser": (browser, None, None, None),
+            "cookiefile": str(COOKIES_FILE),
+            "quiet": True,
+            "no_warnings": True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl._setup_opener()
+            jar = ydl.cookiejar
+            if hasattr(jar, "save"):
+                jar.save(ignore_discard=True, ignore_expires=True)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     # 局域网可访问
