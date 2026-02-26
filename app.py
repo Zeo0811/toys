@@ -41,10 +41,23 @@ import yt_dlp
 
 app = Flask(__name__)
 
-DOWNLOAD_DIR = Path("downloads")
+_BASE_DIR = Path(__file__).parent
+DOWNLOAD_DIR = _BASE_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-COOKIES_FILE = Path("cookies.txt")
+COOKIES_FILE = _BASE_DIR / "cookies.txt"
+
+# yt-dlp 通用选项：使用 iOS 客户端绕过机器人检测，同时保留 web 作为备选
+_YDL_BASE_OPTS: dict = {
+    "quiet": True,
+    "no_warnings": True,
+    "nocheckcertificate": True,
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["ios", "web"],
+        }
+    },
+}
 
 # 任务状态存储 { job_id: { status, progress, speed, eta, filename, error } }
 jobs: dict = {}
@@ -107,10 +120,10 @@ VERSION = "0.7"
 
 # 使用 ffmpeg 合并最佳音视频流（ffmpeg 已通过 nixpacks/render.yaml 安装）
 FORMAT_MAP = {
-    "best":  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
-    "1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]",
-    "720p":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]",
-    "480p":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]",
+    "best":  "bestvideo+bestaudio/best",
+    "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+    "720p":  "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+    "480p":  "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
     "audio": "bestaudio/best",
 }
 
@@ -234,6 +247,10 @@ def _burn_subtitle(video_path: Path, sub_path: Path, output_path: Path) -> None:
     simple_sub = video_path.parent / "burn_sub.srt"
     shutil.copy(str(sub_path), str(simple_sub))
 
+    # 使用绝对路径，避免 ffmpeg 内部路径解析与 cwd 不一致的问题
+    # ffmpeg filtergraph 中冒号需转义（Linux 路径通常无冒号，但防御性处理）
+    abs_sub = str(simple_sub.resolve()).replace("\\", "\\\\").replace(":", "\\:")
+
     style = (
         "FontSize=26,"
         "PrimaryColour=&H00ffffff,"
@@ -245,18 +262,18 @@ def _burn_subtitle(video_path: Path, sub_path: Path, output_path: Path) -> None:
     cmd = [
         "ffmpeg", "-y",
         "-i", str(video_path),
-        "-vf", f"subtitles=burn_sub.srt:force_style='{style}'",
+        "-vf", f"subtitles={abs_sub}:force_style='{style}'",
         "-c:a", "copy",
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "23",
         str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, cwd=str(video_path.parent))
+    result = subprocess.run(cmd, capture_output=True)
     simple_sub.unlink(missing_ok=True)
     if result.returncode != 0:
         raise RuntimeError(
-            "ffmpeg 字幕烧录失败：" + result.stderr.decode(errors="replace")[-400:]
+            "ffmpeg 字幕烧录失败：" + result.stderr.decode(errors="replace")[-600:]
         )
 
 
@@ -264,15 +281,13 @@ def _download_subtitle(url: str, job_dir: Path) -> Path | None:
     """单独下载字幕，429/网络错误时返回 None（优雅降级）。"""
     import time
     sub_opts = {
+        **_YDL_BASE_OPTS,
         "skip_download": True,
         "writesubtitles": True,
         "writeautomaticsub": True,
         "subtitleslangs": ["zh-Hans", "zh-TW", "zh", "en", "en-US"],
         "subtitlesformat": "srt/vtt/best",
         "outtmpl": str(job_dir / "%(title)s.%(ext)s"),
-        "quiet": True,
-        "no_warnings": True,
-        "nocheckcertificate": True,
         "retries": 3,
         "sleep_interval": 2,
         "max_sleep_interval": 8,
@@ -334,14 +349,12 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
         }]
 
     ydl_opts = {
+        **_YDL_BASE_OPTS,
         "format": fmt,
         "outtmpl": str(job_dir / "%(title)s.%(ext)s"),
         "noplaylist": True,
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
-        "quiet": True,
-        "no_warnings": True,
-        "nocheckcertificate": True,
     }
     if COOKIES_FILE.exists():
         ydl_opts["cookiefile"] = str(COOKIES_FILE)
@@ -383,14 +396,19 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
                     update_job(job_id, status="translating", progress=99)
                     sub_file = _translate_srt_to_chinese(sub_file)
 
-                # 烧录
+                # 烧录（失败时降级：保留原视频，不报错）
                 update_job(job_id, status="burning", progress=99)
                 burned_output = output_file.parent / (output_file.stem + "_subbed.mp4")
-                _burn_subtitle(output_file, sub_file, burned_output)
-                # 用烧录后文件替代原文件
-                output_file.unlink(missing_ok=True)
-                output_file = burned_output
-            # 若无字幕，忽略烧录步骤，直接返回原视频
+                try:
+                    _burn_subtitle(output_file, sub_file, burned_output)
+                    # 用烧录后文件替代原文件
+                    output_file.unlink(missing_ok=True)
+                    output_file = burned_output
+                except Exception as burn_err:
+                    # 烧录失败：清理临时文件，继续使用原视频
+                    burned_output.unlink(missing_ok=True)
+                    update_job(job_id, error=f"字幕烧录失败（已返回原视频）：{burn_err}")
+            # 若无字幕或烧录失败，忽略字幕步骤，直接返回原视频
 
         update_job(
             job_id,
@@ -423,12 +441,9 @@ def api_info():
         return jsonify({"error": "请输入视频链接"}), 400
 
     try:
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "nocheckcertificate": True,
-        }
+        ydl_opts = {**_YDL_BASE_OPTS, "skip_download": True}
+        if COOKIES_FILE.exists():
+            ydl_opts["cookiefile"] = str(COOKIES_FILE)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
