@@ -119,13 +119,14 @@ VERSION = "0.7"
 # ──────────────────────────────────────────────
 
 # 使用 ffmpeg 合并最佳音视频流（ffmpeg 已通过 nixpacks/render.yaml 安装）
-# 格式优先级：MP4/M4A 兼容流 → 任意分流合并 → 单流最佳
+# 不加 ext 限制，避免某些视频因无 mp4 流而误报"格式不可用"
+# 用 format_sort 在 ydl_opts 中表达 mp4 偏好，不影响兜底逻辑
 FORMAT_MAP = {
-    "best":  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
-    "1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/bestvideo[height<=1080]+bestaudio[ext=m4a]/best",
-    "720p":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/bestvideo[height<=720]+bestaudio[ext=m4a]/best",
-    "480p":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/bestvideo[height<=480]+bestaudio[ext=m4a]/best",
-    "audio": "bestaudio[ext=m4a]/bestaudio/best",
+    "best":  "bestvideo+bestaudio/best",
+    "1080p": "bestvideo[height<=1080]+bestaudio/best",
+    "720p":  "bestvideo[height<=720]+bestaudio/best",
+    "480p":  "bestvideo[height<=480]+bestaudio/best",
+    "audio": "bestaudio/best",
 }
 
 
@@ -352,6 +353,7 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
     ydl_opts = {
         **_YDL_BASE_OPTS,
         "format": fmt,
+        "format_sort": ["ext:mp4:m4a:webm", "res", "size"],  # 偏好 mp4 但不强制
         "outtmpl": str(job_dir / "%(title)s.%(ext)s"),
         "noplaylist": True,
         "progress_hooks": [progress_hook],
@@ -362,21 +364,22 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
     if not is_audio:
         ydl_opts["merge_output_format"] = "mp4"
 
+    def _do_download(opts):
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            return info.get("title", "video")
+
     try:
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                title = info.get("title", "video")
-        except yt_dlp.utils.DownloadError as e:
-            if "Requested format is not available" in str(e) and quality != "best":
-                # 降级到 best 重试，清空已下载的临时文件后重试
+            title = _do_download(ydl_opts)
+        except Exception as e:
+            if "Requested format is not available" in str(e):
+                # 清空临时文件，用最简格式兜底重试
                 for f in job_dir.iterdir():
                     f.unlink(missing_ok=True)
                 update_job(job_id, status="downloading", progress=0)
-                fallback_opts = {**ydl_opts, "format": FORMAT_MAP["best"]}
-                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    title = info.get("title", "video")
+                fallback_opts = {**ydl_opts, "format": "bestvideo+bestaudio/best"}
+                title = _do_download(fallback_opts)
             else:
                 raise
 
