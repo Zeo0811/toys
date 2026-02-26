@@ -353,6 +353,77 @@
 
     #error-wrap.show { display: block; }
 
+    /* ── Subtitle Toggle ── */
+    .subtitle-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 14px;
+      padding: 12px 14px;
+      background: var(--surface2);
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      cursor: pointer;
+      user-select: none;
+      transition: border-color .2s;
+    }
+
+    .subtitle-toggle.active {
+      border-color: var(--accent);
+      background: rgba(124,106,247,.08);
+    }
+
+    .subtitle-toggle .st-label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .subtitle-toggle .st-title {
+      font-size: .88rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .subtitle-toggle .st-desc {
+      font-size: .72rem;
+      color: var(--text2);
+    }
+
+    /* Switch */
+    .switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+
+    .switch input { display: none; }
+
+    .switch-track {
+      position: absolute;
+      inset: 0;
+      background: var(--border);
+      border-radius: 99px;
+      transition: background .2s;
+    }
+
+    .switch input:checked + .switch-track { background: var(--accent); }
+
+    .switch-thumb {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 18px;
+      height: 18px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform .2s;
+      pointer-events: none;
+    }
+
+    .switch input:checked ~ .switch-thumb { transform: translateX(20px); }
+
     /* ── Tips ── */
     .tips {
       max-width: 540px;
@@ -403,7 +474,7 @@
   <div class="logo">📥</div>
   <h1>视频下载器</h1>
   <p>支持 YouTube、B站、Twitter 等主流平台</p>
-  <span class="version-badge">v{{ version }}</span>
+  <span class="version-badge">v{{ version }} · 字幕烧录</span>
 </header>
 
 <!-- URL 输入卡片 -->
@@ -451,6 +522,21 @@
       <span class="qsub">仅音频</span>
     </div>
   </div>
+</div>
+
+<!-- 字幕烧录选项 -->
+<div class="card" id="card-subtitle">
+  <label class="subtitle-toggle" id="subtitle-toggle" for="subtitle-check">
+    <div class="st-label">
+      <span class="st-title">🀄 中文字幕烧录</span>
+      <span class="st-desc">下载字幕 → 翻译为中文 → 硬烧录到视频</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="subtitle-check" />
+      <span class="switch-track"></span>
+      <span class="switch-thumb"></span>
+    </label>
+  </label>
 </div>
 
 <!-- 下载按钮 + 进度 -->
@@ -506,24 +592,31 @@
   let infoTimer = null;
 
   // ── DOM ──
-  const urlInput    = document.getElementById('url-input');
-  const btnPaste    = document.getElementById('btn-paste');
-  const btnDownload = document.getElementById('btn-download');
-  const preview     = document.getElementById('preview');
-  const thumb       = document.getElementById('thumb');
-  const ptitle      = document.getElementById('ptitle');
-  const pmeta       = document.getElementById('pmeta');
-  const errorWrap   = document.getElementById('error-wrap');
-  const progressWrap= document.getElementById('progress-wrap');
-  const resultWrap  = document.getElementById('result-wrap');
-  const progressBar = document.getElementById('progress-bar');
-  const pctText     = document.getElementById('pct-text');
-  const statusText  = document.getElementById('status-text');
-  const speedText   = document.getElementById('speed-text');
-  const etaText     = document.getElementById('eta-text');
-  const resultTitle = document.getElementById('result-title');
-  const btnSave     = document.getElementById('btn-save');
-  const btnNew      = document.getElementById('btn-new');
+  const urlInput      = document.getElementById('url-input');
+  const btnPaste      = document.getElementById('btn-paste');
+  const btnDownload   = document.getElementById('btn-download');
+  const preview       = document.getElementById('preview');
+  const thumb         = document.getElementById('thumb');
+  const ptitle        = document.getElementById('ptitle');
+  const pmeta         = document.getElementById('pmeta');
+  const errorWrap     = document.getElementById('error-wrap');
+  const progressWrap  = document.getElementById('progress-wrap');
+  const resultWrap    = document.getElementById('result-wrap');
+  const progressBar   = document.getElementById('progress-bar');
+  const pctText       = document.getElementById('pct-text');
+  const statusText    = document.getElementById('status-text');
+  const speedText     = document.getElementById('speed-text');
+  const etaText       = document.getElementById('eta-text');
+  const resultTitle   = document.getElementById('result-title');
+  const btnSave       = document.getElementById('btn-save');
+  const btnNew        = document.getElementById('btn-new');
+  const subtitleCheck = document.getElementById('subtitle-check');
+  const subtitleToggle= document.getElementById('subtitle-toggle');
+
+  // ── 字幕开关同步样式 ──
+  subtitleCheck.addEventListener('change', () => {
+    subtitleToggle.classList.toggle('active', subtitleCheck.checked);
+  });
 
   // ── 画质选择 ──
   document.querySelectorAll('.q-btn').forEach(btn => {
@@ -531,6 +624,15 @@
       document.querySelectorAll('.q-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       selectedQuality = btn.dataset.q;
+      // 音频模式禁用字幕烧录
+      const isAudio = selectedQuality === 'audio';
+      subtitleCheck.disabled = isAudio;
+      subtitleToggle.style.opacity = isAudio ? '0.4' : '1';
+      subtitleToggle.style.cursor = isAudio ? 'not-allowed' : 'pointer';
+      if (isAudio) {
+        subtitleCheck.checked = false;
+        subtitleToggle.classList.remove('active');
+      }
     });
   });
 
@@ -593,7 +695,11 @@
       const res = await fetch('/api/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, quality: selectedQuality }),
+        body: JSON.stringify({
+          url,
+          quality: selectedQuality,
+          burn_subtitle: subtitleCheck.checked,
+        }),
       });
       const data = await res.json();
       if (data.error) { showError(data.error); setDownloading(false); return; }
@@ -620,6 +726,14 @@
         etaText.textContent   = job.eta   ? `剩余：${job.eta}`  : '';
       } else if (job.status === 'merging') {
         setProgress(99, '合并中...');
+        speedText.textContent = '';
+        etaText.textContent   = '';
+      } else if (job.status === 'translating') {
+        setProgress(99, '翻译字幕中...');
+        speedText.textContent = '';
+        etaText.textContent   = '';
+      } else if (job.status === 'burning') {
+        setProgress(99, '烧录字幕中...');
         speedText.textContent = '';
         etaText.textContent   = '';
       } else if (job.status === 'done') {
@@ -657,6 +771,8 @@
     hideError();
     setProgress(0, '准备中...');
     currentJobId = null;
+    subtitleCheck.checked = false;
+    subtitleToggle.classList.remove('active');
     urlInput.focus();
   });
 
