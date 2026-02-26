@@ -119,12 +119,13 @@ VERSION = "0.7"
 # ──────────────────────────────────────────────
 
 # 使用 ffmpeg 合并最佳音视频流（ffmpeg 已通过 nixpacks/render.yaml 安装）
+# 格式优先级：MP4/M4A 兼容流 → 任意分流合并 → 单流最佳
 FORMAT_MAP = {
-    "best":  "bestvideo+bestaudio/best",
-    "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
-    "720p":  "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-    "480p":  "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
-    "audio": "bestaudio/best",
+    "best":  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+    "1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/bestvideo[height<=1080]+bestaudio[ext=m4a]/best",
+    "720p":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/bestvideo[height<=720]+bestaudio[ext=m4a]/best",
+    "480p":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/bestvideo[height<=480]+bestaudio[ext=m4a]/best",
+    "audio": "bestaudio[ext=m4a]/bestaudio/best",
 }
 
 
@@ -362,9 +363,22 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
         ydl_opts["merge_output_format"] = "mp4"
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get("title", "video")
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                title = info.get("title", "video")
+        except yt_dlp.utils.DownloadError as e:
+            if "Requested format is not available" in str(e) and quality != "best":
+                # 降级到 best 重试，清空已下载的临时文件后重试
+                for f in job_dir.iterdir():
+                    f.unlink(missing_ok=True)
+                update_job(job_id, status="downloading", progress=0)
+                fallback_opts = {**ydl_opts, "format": FORMAT_MAP["best"]}
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    title = info.get("title", "video")
+            else:
+                raise
 
         # 找到视频文件（最大文件）
         video_files = [
