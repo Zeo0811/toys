@@ -4,7 +4,7 @@ services:
   - type: web
     name: video-downloader
     runtime: python
-    buildCommand: "apt-get install -y ffmpeg && pip install -r requirements.txt"
+    buildCommand: "apt-get update && apt-get install -y --no-install-recommends ffmpeg && pip install -r requirements.txt"
     startCommand: "gunicorn -w 1 --threads 8 -b 0.0.0.0:$PORT --timeout 600 app:app"
     plan: free
     envVars:

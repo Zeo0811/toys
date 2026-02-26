@@ -92,17 +92,17 @@ def clean_old_jobs():
 
 
 # ──────────────────────────────────────────────
-VERSION = "0.5"
+VERSION = "0.6"
 
 # 下载核心
 # ──────────────────────────────────────────────
 
-# 使用预合并单流格式，无需 ffmpeg
+# 使用 ffmpeg 合并最佳音视频流（ffmpeg 已通过 nixpacks/render.yaml 安装）
 FORMAT_MAP = {
-    "best":  "best[ext=mp4]/best",
-    "1080p": "best[height<=1080][ext=mp4]/best[height<=1080]",
-    "720p":  "best[height<=720][ext=mp4]/best[height<=720]",
-    "480p":  "best[height<=480][ext=mp4]/best[height<=480]",
+    "best":  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+    "1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]",
+    "720p":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]",
+    "480p":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]",
     "audio": "bestaudio/best",
 }
 
@@ -135,6 +135,12 @@ def run_download(job_id: str, url: str, quality: str):
             update_job(job_id, status="merging", progress=99)
 
     postprocessors = []
+    if is_audio:
+        postprocessors = [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }]
 
     ydl_opts = {
         "format": fmt,
@@ -145,9 +151,9 @@ def run_download(job_id: str, url: str, quality: str):
         "quiet": True,
         "no_warnings": True,
         "nocheckcertificate": True,
-        "fixup": "never",        # 禁止 ffmpeg fixup 后处理
-        "prefer_ffmpeg": False,  # 不依赖 ffmpeg
     }
+    if not is_audio:
+        ydl_opts["merge_output_format"] = "mp4"
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
