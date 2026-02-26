@@ -145,7 +145,6 @@ def run_download(job_id: str, url: str, quality: str):
     ydl_opts = {
         "format": fmt,
         "outtmpl": str(job_dir / "%(title)s.%(ext)s"),
-        "merge_output_format": "mp4",
         "noplaylist": True,
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
@@ -153,6 +152,8 @@ def run_download(job_id: str, url: str, quality: str):
         "no_warnings": True,
         "nocheckcertificate": True,
     }
+    if not is_audio:
+        ydl_opts["merge_output_format"] = "mp4"
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
