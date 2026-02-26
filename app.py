@@ -491,10 +491,16 @@ def api_download():
 def api_progress(job_id: str):
     """SSE 流：持续推送下载进度，完成或出错后结束"""
     def generate():
+        # 等待任务出现（最多 5s）：防止 SSE 在 make_job 之前到达的竞态，
+        # 也兼容 Render 零停机发布时新实例短暂无任务的情况
+        deadline = time.time() + 5
+        while not get_job(job_id) and time.time() < deadline:
+            time.sleep(0.3)
+
         while True:
             job = get_job(job_id)
             if not job:
-                data = json.dumps({"status": "error", "error": "任务不存在"})
+                data = json.dumps({"status": "error", "error": "服务已重启，请重新下载"})
                 yield f"data: {data}\n\n"
                 break
 

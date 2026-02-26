@@ -760,8 +760,11 @@
     if (sseSource) sseSource.close();
 
     sseSource = new EventSource(`/api/progress/${jobId}`);
+    let finished = false;
+    let errCount = 0;
 
     sseSource.onmessage = (e) => {
+      errCount = 0; // 收到消息即重置错误计数
       const job = JSON.parse(e.data);
 
       if (job.status === 'downloading') {
@@ -781,10 +784,12 @@
         speedText.textContent = '';
         etaText.textContent   = '';
       } else if (job.status === 'done') {
+        finished = true;
         sseSource.close();
         setProgress(100, '完成');
         setTimeout(() => showResult(jobId, job.title, job.filename), 400);
       } else if (job.status === 'error') {
+        finished = true;
         sseSource.close();
         showError(job.error || '下载失败');
         setDownloading(false);
@@ -792,8 +797,16 @@
       }
     };
 
+    // SSE 断线时：浏览器会自动重连，连续 4 次仍失败才提示用户
     sseSource.onerror = () => {
-      sseSource.close();
+      if (finished) { sseSource.close(); return; }
+      errCount++;
+      if (errCount >= 4) {
+        sseSource.close();
+        showError('连接已断开，请重新尝试下载');
+        setDownloading(false);
+        progressWrap.classList.remove('show');
+      }
     };
   }
 
