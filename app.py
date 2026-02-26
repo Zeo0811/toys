@@ -555,7 +555,14 @@ def api_cookies_from_browser():
                 jar.save(ignore_discard=True, ignore_expires=True)
         return jsonify({"ok": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        error_msg = str(e)
+        # Improve error messages for common issues
+        if "could not find" in error_msg.lower() and "cookies" in error_msg.lower():
+            if browser in ["chrome", "chromium"]:
+                return jsonify({"error": f"找不到 {browser.capitalize()} Cookie。请确保已安装并使用过此浏览器，或尝试使用 Firefox"}), 400
+        elif "keyring" in error_msg.lower():
+            return jsonify({"error": "Chrome 密钥环问题（Linux）。请尝试使用 Firefox"}), 400
+        return jsonify({"error": error_msg}), 500
 
 
 if __name__ == "__main__":
