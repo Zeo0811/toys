@@ -358,6 +358,30 @@
       cursor: pointer;
     }
 
+    /* Cookie 池列表 */
+    .pool-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: .82rem;
+    }
+    .pool-item:last-child { border-bottom: none; }
+    .pool-item-name { flex: 1; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pool-item-size { color: var(--text2); flex-shrink: 0; font-size: .75rem; }
+    .pool-item-del {
+      flex-shrink: 0;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text2);
+      font-size: .72rem;
+      padding: 2px 8px;
+      cursor: pointer;
+    }
+    .pool-item-del:hover { border-color: var(--red); color: var(--red); }
+
     /* ── Error ── */
     #error-wrap {
       display: none;
@@ -572,23 +596,22 @@
   </label>
 </div>
 
-<!-- Cookie 认证卡片 -->
+<!-- Cookie 轮询池卡片 -->
 <div class="card" id="card-cookie">
-  <div class="section-label">YouTube 认证</div>
-  <div id="cookie-status-row">
-    <span id="cookie-status-icon">⚪</span>
-    <span id="cookie-status-text">未上传 Cookie</span>
+  <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;">
+    <span>YouTube Cookie 池</span>
+    <span id="pool-count-badge" style="font-size:.7rem;background:var(--surface2);border:1px solid var(--border);border-radius:99px;padding:2px 8px;font-weight:400;letter-spacing:0">0 个</span>
   </div>
+  <div id="pool-list" style="margin-top:8px"></div>
   <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
     <label class="btn-cookie-upload" for="cookie-file-input" style="cursor:pointer;">
-      📂 上传 cookies.txt
+      📂 添加 Cookie
       <input type="file" id="cookie-file-input" accept=".txt" style="display:none" />
     </label>
-    <button class="btn-cookie-delete" id="btn-cookie-delete" style="display:none">🗑 移除</button>
   </div>
   <div id="cookie-import-msg" style="margin-top:6px;font-size:12px;display:none"></div>
   <div style="margin-top:8px;font-size:12px;color:var(--text2)">
-    Cookie 保存在服务器，长期复用，失效后会提示重新上传。
+    多个 Cookie 轮流使用，降低单账号请求频率。
     <a href="https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp" target="_blank" style="color:#7c9ef8">如何导出 cookies.txt</a>
   </div>
 </div>
@@ -903,12 +926,11 @@
   btnSave.addEventListener('click', iosDownloadAlert);
   btnSaveBurned.addEventListener('click', iosDownloadAlert);
 
-  // ── Cookie 管理 ──
-  const cookieStatusIcon = document.getElementById('cookie-status-icon');
-  const cookieStatusText = document.getElementById('cookie-status-text');
-  const cookieFileInput  = document.getElementById('cookie-file-input');
-  const btnCookieDelete  = document.getElementById('btn-cookie-delete');
-  const cookieImportMsg  = document.getElementById('cookie-import-msg');
+  // ── Cookie 轮询池管理 ──
+  const cookieFileInput = document.getElementById('cookie-file-input');
+  const cookieImportMsg = document.getElementById('cookie-import-msg');
+  const poolList        = document.getElementById('pool-list');
+  const poolBadge       = document.getElementById('pool-count-badge');
 
   function showImportMsg(text, isError) {
     cookieImportMsg.textContent = text;
@@ -917,18 +939,30 @@
     setTimeout(() => { cookieImportMsg.style.display = 'none'; }, 5000);
   }
 
-  function refreshCookieStatus() {
-    fetch('/api/cookies/status').then(r => r.json()).then(d => {
-      if (d.configured) {
-        cookieStatusIcon.textContent = '🟢';
-        cookieStatusText.textContent = 'Cookie 已上传，服务器长期保存';
-        btnCookieDelete.style.display = 'inline-block';
-      } else {
-        cookieStatusIcon.textContent = '⚪';
-        cookieStatusText.textContent = '未上传 Cookie';
-        btnCookieDelete.style.display = 'none';
+  function loadCookiePool() {
+    fetch('/api/cookies/pool').then(r => r.json()).then(pool => {
+      poolBadge.textContent = pool.length + ' 个';
+      poolBadge.style.color = pool.length ? 'var(--green)' : 'var(--text2)';
+      if (!pool.length) {
+        poolList.innerHTML = '<div style="font-size:.8rem;color:var(--text2);padding:6px 0">暂无 Cookie，下载时可能遇到反爬限制</div>';
+        return;
       }
-    });
+      poolList.innerHTML = pool.map((c, i) => `
+        <div class="pool-item">
+          <span class="pool-item-name">Cookie ${i + 1}</span>
+          <span class="pool-item-size">${c.size_kb} KB</span>
+          <button class="pool-item-del" onclick="deleteCookie('${c.id}')">移除</button>
+        </div>
+      `).join('');
+    }).catch(() => {});
+  }
+
+  function deleteCookie(id) {
+    fetch(`/api/cookies/delete/${id}`, { method: 'POST' })
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok) loadCookiePool();
+      });
   }
 
   cookieFileInput.addEventListener('change', () => {
@@ -941,8 +975,8 @@
       .then(d => {
         cookieFileInput.value = '';
         if (d.ok) {
-          showImportMsg('✅ Cookie 上传成功，已保存到服务器', false);
-          refreshCookieStatus();
+          showImportMsg(`✅ Cookie 已加入池（共 ${d.count} 个）`, false);
+          loadCookiePool();
         } else {
           showImportMsg('❌ 上传失败：' + (d.error || '未知错误'), true);
         }
@@ -950,23 +984,16 @@
       .catch(() => showImportMsg('❌ 上传失败，请重试', true));
   });
 
-  btnCookieDelete.addEventListener('click', () => {
-    fetch('/api/cookies/delete', { method: 'POST' }).then(() => {
-      showImportMsg('Cookie 已移除', false);
-      refreshCookieStatus();
-    });
-  });
-
   // 下载出现 bot 检测错误时提示重新上传
   const _origShowError = showError;
   showError = function(msg) {
     _origShowError(msg);
     if (msg && (msg.includes('Sign in') || msg.includes('bot') || msg.includes('机器人'))) {
-      showImportMsg('⚠️ Cookie 可能已失效，请重新上传 cookies.txt', true);
+      showImportMsg('⚠️ Cookie 可能已失效，请添加新的 cookies.txt', true);
     }
   };
 
-  refreshCookieStatus();
+  loadCookiePool();
 
   // ── 下载历史 ──
   const cardHistory = document.getElementById('card-history');
