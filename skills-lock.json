@@ -1,6 +1,11 @@
 {
   "version": 1,
   "skills": {
+    "deployment-pipeline-design": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "1b5368bcf29ed6a08aded1cf4f3ff790edcd0c6c31db4e694592195d25f3d03c"
+    },
     "find-skills": {
       "source": "vercel-labs/skills",
       "sourceType": "github",
