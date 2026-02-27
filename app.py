@@ -15,7 +15,7 @@ import shutil
 import threading
 import subprocess
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, Response, send_file
+from flask import Flask, render_template, request, jsonify, Response, send_file, g
 
 # 自动安装/升级依赖
 def ensure_deps():
@@ -42,7 +42,38 @@ _BASE_DIR = Path(__file__).parent
 DOWNLOAD_DIR = _BASE_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-COOKIES_FILE = _BASE_DIR / "cookies.txt"
+COOKIES_FILE = _BASE_DIR / "cookies.txt"        # 旧版单文件（保留兼容）
+
+# ── Cookie 轮询池 ──────────────────────────────
+COOKIES_DIR = _BASE_DIR / "cookies_pool"
+COOKIES_DIR.mkdir(exist_ok=True)
+
+# 迁移旧版 cookies.txt → 池目录（只在 pool 为空时执行一次）
+if COOKIES_FILE.exists() and not list(COOKIES_DIR.glob("yt_*.txt")):
+    shutil.move(str(COOKIES_FILE), str(COOKIES_DIR / f"yt_{uuid.uuid4().hex[:8]}.txt"))
+
+_pool_lock = threading.Lock()
+_pool_idx = 0
+
+# ── 用户识别 ───────────────────────────────────
+USER_COOKIE = "vid_uid"
+
+
+def get_cookie_pool() -> list[Path]:
+    """返回 cookie 池中所有有效文件（按文件名排序）。"""
+    return sorted(COOKIES_DIR.glob("yt_*.txt"))
+
+
+def get_next_cookie() -> Path | None:
+    """轮询取下一个 cookie 文件；池为空返回 None。"""
+    global _pool_idx
+    pool = get_cookie_pool()
+    if not pool:
+        return None
+    with _pool_lock:
+        idx = _pool_idx % len(pool)
+        _pool_idx = idx + 1
+    return pool[idx]
 
 
 def _get_base_opts() -> dict:
@@ -51,8 +82,8 @@ def _get_base_opts() -> dict:
 
     客户端选择：
     - tv_embedded：提供完整 DASH 流（最高 4K），无需 PO Token，支持 cookies 认证
-    - web：作兜底，有 PO Token 时可用
-    mweb/ios 不提供 DASH 分离流，不能用于高清下载，已排除。
+    - android_creator：备用高清客户端，同样无需 n-challenge
+    严禁加入 web 客户端：web 需要 n-challenge，无 Node.js 时全部格式失效。
     """
     opts: dict = {
         "quiet": True,
@@ -60,14 +91,13 @@ def _get_base_opts() -> dict:
         "nocheckcertificate": True,
         "extractor_args": {
             "youtube": {
-                # tv_embedded / android_creator：均支持 DASH 高清流，无需 n-challenge JS 解析
-                # 严禁加入 web 客户端：web 需要 n-challenge，无 Node.js 时全部格式失效
                 "player_client": ["tv_embedded", "android_creator"],
             }
         },
     }
-    if COOKIES_FILE.exists():
-        opts["cookiefile"] = str(COOKIES_FILE)
+    cookie = get_next_cookie()
+    if cookie and cookie.exists():
+        opts["cookiefile"] = str(cookie)
     return opts
 
 # 任务状态存储 { job_id: { status, progress, speed, eta, filename, error } }
@@ -79,7 +109,7 @@ jobs_lock = threading.Lock()
 # 工具函数
 # ──────────────────────────────────────────────
 
-def make_job(job_id: str, url: str = ""):
+def make_job(job_id: str, url: str = "", user_id: str = ""):
     with jobs_lock:
         jobs[job_id] = {
             "status": "pending",   # pending | downloading | merging | translating | burning | done | error
@@ -96,6 +126,7 @@ def make_job(job_id: str, url: str = ""):
             "burn_error": None,
             "error": None,
             "url": url,
+            "user_id": user_id,
             "created_at": time.time(),
             "completed_at": None,
         }
@@ -139,7 +170,7 @@ def clean_old_jobs():
 
 
 # ──────────────────────────────────────────────
-VERSION = "0.9"
+VERSION = "1.0"
 
 # 下载核心
 # ──────────────────────────────────────────────
@@ -306,16 +337,16 @@ def _burn_subtitle_with_progress(
     shutil.copy(str(sub_path), str(simple_sub))
     abs_sub = str(simple_sub.resolve()).replace("\\", "\\\\").replace(":", "\\:")
 
-    # 使用 Noto Sans CJK SC 确保中文字符正确渲染
+    # 使用 Noto Sans CJK SC 确保中文字符正确渲染；Alignment=2 强制底部居中
     style = (
         "FontName=Noto Sans CJK SC,"
         "FontSize=24,"
-        "PrimaryColour=&H00ffffff,"
+        "PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00000000,"
         "Outline=2,"
         "Shadow=1,"
-        "Bold=0,"
-        "MarginV=20"
+        "Alignment=2,"
+        "MarginV=25"
     )
 
     # 先用 ffprobe 取视频时长（微秒），用于计算百分比
@@ -554,6 +585,34 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
 
 
 # ──────────────────────────────────────────────
+# 用户识别中间件（自动 Cookie，无需登录）
+# ──────────────────────────────────────────────
+
+@app.before_request
+def _ensure_uid():
+    """从 Cookie 中读取或新生成用户 ID，挂到 g.uid。"""
+    uid = request.cookies.get(USER_COOKIE, "")
+    g.uid = uid
+    g.new_uid = "" if uid else uuid.uuid4().hex
+    if not uid:
+        g.uid = g.new_uid
+
+
+@app.after_request
+def _set_uid_cookie(resp):
+    """若是新用户，写入长期 Cookie。"""
+    if getattr(g, "new_uid", ""):
+        resp.set_cookie(
+            USER_COOKIE,
+            g.new_uid,
+            max_age=365 * 86400,
+            httponly=True,
+            samesite="Lax",
+        )
+    return resp
+
+
+# ──────────────────────────────────────────────
 # 路由
 # ──────────────────────────────────────────────
 
@@ -603,7 +662,7 @@ def api_download():
     clean_old_jobs()
 
     job_id = uuid.uuid4().hex
-    make_job(job_id, url=url)
+    make_job(job_id, url=url, user_id=g.uid)
 
     thread = threading.Thread(
         target=run_download,
@@ -676,7 +735,8 @@ def api_file_typed(job_id: str, file_type: str):
 
 @app.route("/api/history")
 def api_history():
-    """返回最近 20 条已完成的下载记录"""
+    """返回当前用户最近 20 条已完成的下载记录（按 uid Cookie 隔离）"""
+    uid = g.uid
     with jobs_lock:
         done = [
             {
@@ -690,14 +750,30 @@ def api_history():
             }
             for jid, info in jobs.items()
             if info.get("status") in ("done", "error")
+            and info.get("user_id", "") == uid
         ]
     done.sort(key=lambda x: x.get("completed_at") or 0, reverse=True)
     return jsonify(done[:20])
 
 
+@app.route("/api/cookies/pool")
+def api_cookies_pool():
+    """返回 cookie 池列表。"""
+    pool = get_cookie_pool()
+    return jsonify([
+        {
+            "id": p.stem,
+            "name": p.name,
+            "size_kb": round(p.stat().st_size / 1024, 1),
+        }
+        for p in pool if p.exists()
+    ])
+
+
 @app.route("/api/cookies/status")
 def api_cookies_status():
-    return jsonify({"configured": COOKIES_FILE.exists()})
+    count = len(get_cookie_pool())
+    return jsonify({"configured": count > 0, "count": count})
 
 
 @app.route("/api/cookies/upload", methods=["POST"])
@@ -705,31 +781,51 @@ def api_cookies_upload():
     f = request.files.get("file")
     if not f:
         return jsonify({"error": "未收到文件"}), 400
-    f.save(str(COOKIES_FILE))
-    return jsonify({"ok": True})
+    fname = f"yt_{uuid.uuid4().hex[:8]}.txt"
+    (COOKIES_DIR / fname).write_bytes(f.read())
+    return jsonify({"ok": True, "count": len(get_cookie_pool())})
 
 
 @app.route("/api/cookies/delete", methods=["POST"])
 def api_cookies_delete():
-    COOKIES_FILE.unlink(missing_ok=True)
-    return jsonify({"ok": True})
+    """清空整个 cookie 池。"""
+    for p in get_cookie_pool():
+        p.unlink(missing_ok=True)
+    return jsonify({"ok": True, "count": 0})
+
+
+@app.route("/api/cookies/delete/<cookie_id>", methods=["POST"])
+def api_cookies_delete_one(cookie_id: str):
+    """删除指定 cookie（路径穿越防护：id 必须匹配 yt_[a-f0-9]{8}）。"""
+    if not re.match(r"^yt_[a-f0-9]{8}$", cookie_id):
+        return jsonify({"error": "invalid id"}), 400
+    target = COOKIES_DIR / f"{cookie_id}.txt"
+    target.unlink(missing_ok=True)
+    return jsonify({"ok": True, "count": len(get_cookie_pool())})
 
 
 @app.route("/api/cookies/check", methods=["POST"])
 def api_cookies_check():
-    """验证 cookies 是否仍然有效（用一个简短的 YouTube 请求测试）。"""
-    if not COOKIES_FILE.exists():
-        return jsonify({"valid": False, "reason": "未上传 Cookie"})
+    """用池中第一个 cookie 验证 YouTube 访问是否正常。"""
+    pool = get_cookie_pool()
+    if not pool:
+        return jsonify({"valid": False, "reason": "未配置 Cookie"})
     try:
-        opts = {**_get_base_opts(), "skip_download": True, "quiet": True, "no_warnings": True}
+        opts = {
+            **_get_base_opts(),
+            "skip_download": True,
+            "quiet": True,
+            "no_warnings": True,
+            "cookiefile": str(pool[0]),  # 固定用第一个测试，不消耗轮询位置
+        }
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info("https://www.youtube.com/watch?v=BjUShsxq4wU", download=False)
         return jsonify({"valid": True})
     except Exception as e:
         msg = str(e)
         if "Sign in" in msg or "bot" in msg.lower():
-            return jsonify({"valid": False, "reason": "Cookie 已失效，请重新上传"})
-        return jsonify({"valid": True})  # 其他错误不代表 cookie 无效
+            return jsonify({"valid": False, "reason": "Cookie 可能已失效，请重新上传"})
+        return jsonify({"valid": True})
 
 
 if __name__ == "__main__":
