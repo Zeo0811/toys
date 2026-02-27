@@ -51,21 +51,24 @@ COOKIES_FILE = _BASE_DIR / "cookies.txt"
 def _get_base_opts() -> dict:
     """
     动态构建 yt-dlp 基础选项。
-    - 有 cookies：使用 web 客户端（cookies 只对 web 客户端有效）
-    - 无 cookies：使用 ios 客户端（规避机器人检测）
+
+    客户端选择原则：
+    - mweb：支持 DASH 音视频分离流，无需 PO Token，接受 cookies 认证（首选）
+    - ios：不需要 PO Token，作为备选
+    - web：需要 PO Token 才能访问 DASH 流，仅作最终兜底
+    cookies 有效性与客户端无关，有就传。
     """
-    has_cookies = COOKIES_FILE.exists()
     opts: dict = {
         "quiet": True,
         "no_warnings": True,
         "nocheckcertificate": True,
         "extractor_args": {
             "youtube": {
-                "player_client": ["web"] if has_cookies else ["ios", "mweb", "web"],
+                "player_client": ["mweb", "ios", "web"],
             }
         },
     }
-    if has_cookies:
+    if COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
     return opts
 
