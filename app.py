@@ -131,6 +131,8 @@ def make_job(job_id: str, url: str = "", user_id: str = ""):
             "original_filename": None,
             "burned_filepath": None,
             "burned_filename": None,
+            "burn_status": "idle",   # idle | pending | translating | burning | done | error
+            "burn_progress": 0,
             "burn_error": None,
             "error": None,
             "url": url,
@@ -177,7 +179,7 @@ def clean_old_jobs():
             del jobs[jid]
 
 
-def submit_download(job_id: str, url: str, quality: str, burn_subtitle: bool):
+def submit_download(job_id: str, url: str, quality: str):
     """
     将下载任务加入并发队列。
     若并发数已满（由 MAX_CONCURRENT_DOWNLOADS 控制），任务自动进入排队状态，
@@ -202,7 +204,7 @@ def submit_download(job_id: str, url: str, quality: str, burn_subtitle: bool):
                 update_job(jid, queue_pos=i + 1)
 
         try:
-            run_download(job_id, url, quality, burn_subtitle)
+            run_download(job_id, url, quality)
         finally:
             _download_sem.release()
             # 任务结束后，若队列中仍有任务，位置已在下一个 acquire 时自动更新
@@ -510,16 +512,12 @@ def _download_subtitle(url: str, job_dir: Path) -> Path | None:
 # 下载主逻辑
 # ──────────────────────────────────────────────
 
-def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = False):
+def run_download(job_id: str, url: str, quality: str):
     job_dir = DOWNLOAD_DIR / job_id
     job_dir.mkdir(exist_ok=True)
 
     fmt = FORMAT_MAP.get(quality, FORMAT_MAP["best"])
     is_audio = quality == "audio"
-
-    # 音频模式不支持字幕烧录
-    if is_audio:
-        burn_subtitle = False
 
     def progress_hook(d):
         if d["status"] == "downloading":
@@ -597,45 +595,6 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
             original_filename=output_file.name,
         )
 
-        # ── 字幕烧录流程 ──
-        if burn_subtitle:
-            # 单独下载字幕，失败时优雅降级（不影响视频）
-            sub_file = _download_subtitle(url, job_dir)
-            if sub_file is None:
-                sub_file = _find_subtitle(job_dir)
-
-            if sub_file:
-                # 如果是 VTT，先转 SRT
-                if sub_file.suffix.lower() == ".vtt":
-                    sub_file = _convert_vtt_to_srt(sub_file)
-
-                # 如果不是中文字幕，翻译（内部会调用 _fix_srt_overlaps）
-                if not _is_chinese_subtitle(sub_file):
-                    update_job(job_id, status="translating", progress=99)
-                    sub_file = _translate_srt_to_chinese(sub_file)
-                else:
-                    # 中文字幕跳过翻译，但同样需要修复重叠
-                    sub_file = _fix_srt_overlaps(sub_file)
-
-                # 烧录到独立文件（保留原视频）
-                update_job(job_id, status="burning", progress=0)
-                burned_output = output_file.parent / (output_file.stem + "_subbed.mp4")
-
-                def burn_progress_cb(pct: int):
-                    update_job(job_id, status="burning", progress=pct)
-
-                try:
-                    _burn_subtitle_with_progress(output_file, sub_file, burned_output, burn_progress_cb)
-                    update_job(
-                        job_id,
-                        burned_filepath=str(burned_output),
-                        burned_filename=burned_output.name,
-                    )
-                except Exception as burn_err:
-                    burned_output.unlink(missing_ok=True)
-                    update_job(job_id, burn_error=f"字幕烧录失败（可下载原始视频）：{burn_err}")
-            # 若无字幕或烧录失败，仍提供原始视频
-
         update_job(
             job_id,
             status="done",
@@ -648,6 +607,67 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
 
     except Exception as e:
         update_job(job_id, status="error", error=str(e), completed_at=time.time())
+
+
+# ──────────────────────────────────────────────
+# 字幕烧录（下载完成后按需触发）
+# ──────────────────────────────────────────────
+
+def run_burn(job_id: str):
+    """对已下载完成的任务执行字幕下载 → 翻译 → 烧录。"""
+    job = get_job(job_id)
+    if not job:
+        return
+
+    url = job.get("url", "")
+    job_dir = DOWNLOAD_DIR / job_id
+    original_filepath = job.get("original_filepath") or job.get("filepath")
+
+    if not original_filepath or not Path(original_filepath).exists():
+        update_job(job_id, burn_status="error", burn_error="原始视频文件不存在，请重新下载")
+        return
+
+    output_file = Path(original_filepath)
+
+    try:
+        # 下载字幕
+        update_job(job_id, burn_status="translating", burn_progress=0)
+        sub_file = _download_subtitle(url, job_dir)
+        if sub_file is None:
+            sub_file = _find_subtitle(job_dir)
+
+        if sub_file is None:
+            update_job(job_id, burn_status="error", burn_error="未找到可用字幕，该视频可能没有字幕")
+            return
+
+        # VTT → SRT
+        if sub_file.suffix.lower() == ".vtt":
+            sub_file = _convert_vtt_to_srt(sub_file)
+
+        # 翻译或修复中文字幕
+        if not _is_chinese_subtitle(sub_file):
+            sub_file = _translate_srt_to_chinese(sub_file)
+        else:
+            sub_file = _fix_srt_overlaps(sub_file)
+
+        # 烧录
+        update_job(job_id, burn_status="burning", burn_progress=0)
+        burned_output = output_file.parent / (output_file.stem + "_subbed.mp4")
+
+        def burn_progress_cb(pct: int):
+            update_job(job_id, burn_progress=pct)
+
+        _burn_subtitle_with_progress(output_file, sub_file, burned_output, burn_progress_cb)
+        update_job(
+            job_id,
+            burn_status="done",
+            burn_progress=100,
+            burned_filepath=str(burned_output),
+            burned_filename=burned_output.name,
+        )
+
+    except Exception as e:
+        update_job(job_id, burn_status="error", burn_error=str(e))
 
 
 # ──────────────────────────────────────────────
@@ -718,8 +738,6 @@ def api_download():
     data = request.get_json(force=True)
     url = (data.get("url") or "").strip()
     quality = (data.get("quality") or "best").strip()
-    burn_subtitle = bool(data.get("burn_subtitle", False))
-
     if not url:
         return jsonify({"error": "请输入视频链接"}), 400
     if quality not in FORMAT_MAP:
@@ -729,9 +747,28 @@ def api_download():
 
     job_id = uuid.uuid4().hex
     make_job(job_id, url=url, user_id=g.uid)
-    submit_download(job_id, url, quality, burn_subtitle)
+    submit_download(job_id, url, quality)
 
     return jsonify({"job_id": job_id})
+
+
+@app.route("/api/burn/<job_id>", methods=["POST"])
+def api_burn(job_id: str):
+    """对已下载完成的任务触发字幕烧录（异步）。"""
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"error": "任务不存在或已过期"}), 404
+    if job.get("user_id") and job.get("user_id") != g.uid:
+        return jsonify({"error": "无权访问"}), 403
+    if job.get("status") != "done":
+        return jsonify({"error": "视频尚未下载完成"}), 400
+    burn_status = job.get("burn_status", "idle")
+    if burn_status in ("pending", "translating", "burning"):
+        return jsonify({"error": "字幕烧录已在进行中"}), 400
+
+    update_job(job_id, burn_status="pending", burn_progress=0, burn_error=None)
+    threading.Thread(target=run_burn, args=(job_id,), daemon=True).start()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/progress/<job_id>")
@@ -804,6 +841,7 @@ def api_history():
                 "title": info.get("title", ""),
                 "filename": info.get("original_filename") or info.get("filename", ""),
                 "burned_filename": info.get("burned_filename"),
+                "burn_status": info.get("burn_status", "idle"),
                 "url": info.get("url", ""),
                 "completed_at": info.get("completed_at"),
                 "status": info.get("status"),
