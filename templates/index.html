@@ -383,6 +383,23 @@
     }
     .pool-item-del:hover { border-color: var(--red); color: var(--red); }
 
+    /* Cookie 状态徽章 */
+    .cookie-badge {
+      display: inline-block;
+      font-size: .68rem;
+      border-radius: 99px;
+      padding: 2px 8px;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .cookie-badge-ok      { background: rgba(74,222,128,.15); color: #4ade80; border: 1px solid rgba(74,222,128,.3); }
+    .cookie-badge-invalid { background: rgba(239,68,68,.12);  color: #f87171; border: 1px solid rgba(239,68,68,.25); }
+    .cookie-badge-unknown { background: var(--surface2);      color: var(--text2); border: 1px solid var(--border); }
+    .cookie-badge-checking{ background: rgba(124,106,247,.12);color: var(--accent2); border: 1px solid rgba(124,106,247,.3); animation: pulse-badge 1.2s ease-in-out infinite; }
+    @keyframes pulse-badge { 0%,100%{opacity:1} 50%{opacity:.5} }
+
+    .pool-item-meta { font-size: .68rem; color: var(--text2); flex-shrink: 0; }
+
     /* ── Error ── */
     #error-wrap {
       display: none;
@@ -566,10 +583,11 @@
       📂 添加 Cookie
       <input type="file" id="cookie-file-input" accept=".txt" style="display:none" />
     </label>
+    <button class="btn-cookie-delete" id="btn-check-all" style="font-size:.8rem;padding:7px 14px">🔍 检测全部</button>
   </div>
   <div id="cookie-import-msg" style="margin-top:6px;font-size:12px;display:none"></div>
   <div style="margin-top:8px;font-size:12px;color:var(--text2)">
-    多个 Cookie 轮流使用，降低单账号请求频率。
+    Cookie 失效时自动移除，无法手动删除。多个 Cookie 轮流使用降低封号风险。
     <a href="https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp" target="_blank" style="color:#7c9ef8">如何导出 cookies.txt</a>
   </div>
 </div>
@@ -1055,6 +1073,7 @@
   const cookieImportMsg = document.getElementById('cookie-import-msg');
   const poolList        = document.getElementById('pool-list');
   const poolBadge       = document.getElementById('pool-count-badge');
+  const btnCheckAll     = document.getElementById('btn-check-all');
 
   function showImportMsg(text, isError) {
     cookieImportMsg.textContent = text;
@@ -1063,8 +1082,25 @@
     setTimeout(() => { cookieImportMsg.style.display = 'none'; }, 5000);
   }
 
+  function cookieBadge(c) {
+    if (c.checking) return '<span class="cookie-badge cookie-badge-checking">⏳ 检测中</span>';
+    if (c.valid === true)  return '<span class="cookie-badge cookie-badge-ok">✅ 正常</span>';
+    if (c.valid === false) return '<span class="cookie-badge cookie-badge-invalid">❌ 已失效</span>';
+    return '<span class="cookie-badge cookie-badge-unknown">⚪ 未验证</span>';
+  }
+
+  function cookieMeta(c) {
+    const parts = [];
+    if (c.use_count > 0) parts.push(`${c.use_count}次`);
+    if (c.last_used_ago) parts.push(c.last_used_ago);
+    return parts.length ? `<span class="pool-item-meta">${parts.join(' · ')}</span>` : '';
+  }
+
+  let _checkPollTimer = null;
+
   function loadCookiePool() {
     fetch('/api/cookies/pool').then(r => r.json()).then(pool => {
+      const okCount = pool.filter(c => c.valid !== false).length;
       poolBadge.textContent = pool.length + ' 个';
       poolBadge.style.color = pool.length ? 'var(--green)' : 'var(--text2)';
       if (!pool.length) {
@@ -1074,20 +1110,50 @@
       poolList.innerHTML = pool.map((c, i) => `
         <div class="pool-item">
           <span class="pool-item-name">Cookie ${i + 1}</span>
-          <span class="pool-item-size">${c.size_kb} KB</span>
-          <button class="pool-item-del" onclick="deleteCookie('${c.id}')">移除</button>
+          <span class="pool-item-size" style="color:var(--text2);font-size:.72rem">${c.size_kb} KB</span>
+          ${cookieBadge(c)}
+          ${cookieMeta(c)}
         </div>
       `).join('');
+
+      // 若有 checking 状态，继续轮询
+      const anyChecking = pool.some(c => c.checking);
+      if (anyChecking && !_checkPollTimer) {
+        _checkPollTimer = setInterval(() => {
+          fetch('/api/cookies/pool').then(r => r.json()).then(p2 => {
+            if (!p2.some(c => c.checking)) {
+              clearInterval(_checkPollTimer); _checkPollTimer = null;
+              btnCheckAll.disabled = false;
+              btnCheckAll.textContent = '🔍 检测全部';
+            }
+            // 刷新整个列表
+            loadCookiePool();
+          }).catch(() => {});
+        }, 1500);
+      } else if (!anyChecking && _checkPollTimer) {
+        clearInterval(_checkPollTimer); _checkPollTimer = null;
+        btnCheckAll.disabled = false;
+        btnCheckAll.textContent = '🔍 检测全部';
+      }
     }).catch(() => {});
   }
 
-  function deleteCookie(id) {
-    fetch(`/api/cookies/delete/${id}`, { method: 'POST' })
+  btnCheckAll.addEventListener('click', () => {
+    btnCheckAll.disabled = true;
+    btnCheckAll.textContent = '检测中...';
+    fetch('/api/cookies/check_all', { method: 'POST' })
       .then(r => r.json())
       .then(d => {
-        if (d.ok) loadCookiePool();
-      });
-  }
+        if (d.checking === 0) {
+          btnCheckAll.disabled = false;
+          btnCheckAll.textContent = '🔍 检测全部';
+          showImportMsg('暂无 Cookie 可检测', false);
+          return;
+        }
+        loadCookiePool(); // 触发轮询
+      })
+      .catch(() => { btnCheckAll.disabled = false; btnCheckAll.textContent = '🔍 检测全部'; });
+  });
 
   cookieFileInput.addEventListener('change', () => {
     const file = cookieFileInput.files[0];

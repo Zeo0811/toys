@@ -55,30 +55,109 @@ if COOKIES_FILE.exists() and not list(COOKIES_DIR.glob("yt_*.txt")):
 _pool_lock = threading.Lock()
 _pool_idx = 0
 
+# ── Cookie 状态追踪 ──────────────────────────────────────────────
+# { cookie_stem: { valid: True/False/None, use_count: int, last_used: float|None, checking: bool } }
+_cookie_status: dict = {}
+_cookie_status_lock = threading.Lock()
+
 # ── 用户识别 ───────────────────────────────────
 USER_COOKIE = "vid_uid"
 
 
 def get_cookie_pool() -> list[Path]:
-    """返回 cookie 池中所有有效文件（按文件名排序）。"""
+    """返回 cookie 池中所有文件（按文件名排序）。"""
     return sorted(COOKIES_DIR.glob("yt_*.txt"))
 
 
+def _ensure_cookie_status(cid: str) -> dict:
+    """初始化并返回指定 cookie 的状态字典（不加锁，调用方持锁）。"""
+    return _cookie_status.setdefault(cid, {
+        "valid": None,      # None=未验证 True=正常 False=已失效
+        "use_count": 0,
+        "last_used": None,
+        "checking": False,
+    })
+
+
 def get_next_cookie() -> Path | None:
-    """轮询取下一个 cookie 文件；池为空返回 None。"""
+    """轮询取下一个 cookie（跳过已知失效的），并记录使用次数/时间。"""
     global _pool_idx
     pool = get_cookie_pool()
     if not pool:
         return None
+    # 过滤掉已知失效的 cookie（仍存在于磁盘但状态为 False）
+    valid_pool = [
+        p for p in pool
+        if _cookie_status.get(p.stem, {}).get("valid") is not False
+    ]
+    if not valid_pool:
+        valid_pool = pool   # 全部失效时兜底全部尝试
     with _pool_lock:
-        idx = _pool_idx % len(pool)
+        idx = _pool_idx % len(valid_pool)
         _pool_idx = idx + 1
-    return pool[idx]
+    chosen = valid_pool[idx]
+    with _cookie_status_lock:
+        s = _ensure_cookie_status(chosen.stem)
+        s["use_count"] = s.get("use_count", 0) + 1
+        s["last_used"] = time.time()
+    return chosen
 
 
-def _get_base_opts() -> dict:
+def _is_auth_error(msg: str) -> bool:
+    """判断错误是否为 YouTube 认证/bot 检测失败。"""
+    lo = msg.lower()
+    return any(k in lo for k in [
+        "sign in", "bot", "confirm you're not a bot",
+        "has not given you access", "requires authentication",
+        "private video", "login", "cookies", "blocked",
+    ])
+
+
+def _remove_cookie_file(cookie_path: Path) -> None:
+    """删除 cookie 文件并清理状态表。"""
+    cid = cookie_path.stem
+    cookie_path.unlink(missing_ok=True)
+    with _cookie_status_lock:
+        _cookie_status.pop(cid, None)
+
+
+def _check_single_cookie(cookie_path: Path) -> bool | None:
+    """
+    验证单个 cookie 是否对 YouTube 有效。
+    返回 True=有效, False=确认失效（已自动删除）, None=网络错误无法判断。
+    """
+    cid = cookie_path.stem
+    try:
+        opts = {
+            "skip_download": True, "quiet": True, "no_warnings": True,
+            "nocheckcertificate": True,
+            "cookiefile": str(cookie_path),
+            "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}},
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info("https://www.youtube.com/watch?v=BjUShsxq4wU", download=False)
+        with _cookie_status_lock:
+            s = _ensure_cookie_status(cid)
+            s["valid"] = True
+            s["checking"] = False
+        return True
+    except Exception as e:
+        if _is_auth_error(str(e)):
+            # 确认失效，自动删除
+            _remove_cookie_file(cookie_path)
+            return False
+        else:
+            # 网络/平台错误，不确定
+            with _cookie_status_lock:
+                s = _ensure_cookie_status(cid)
+                s["checking"] = False
+            return None
+
+
+def _get_base_opts(cookie: "Path | None" = None) -> dict:
     """
     动态构建 yt-dlp 基础选项。
+    若传入 cookie 则直接使用（不消耗轮询位置）；否则自动轮询取下一个。
 
     客户端选择：
     - tv_embedded：提供完整 DASH 流（最高 4K），无需 PO Token，支持 cookies 认证
@@ -95,7 +174,8 @@ def _get_base_opts() -> dict:
             }
         },
     }
-    cookie = get_next_cookie()
+    if cookie is None:
+        cookie = get_next_cookie()
     if cookie and cookie.exists():
         opts["cookiefile"] = str(cookie)
     return opts
@@ -544,8 +624,11 @@ def run_download(job_id: str, url: str, quality: str):
             "preferredquality": "192",
         }]
 
+    # 提前选定 cookie，记录用于本次下载（auth 错误时自动清除）
+    used_cookie = get_next_cookie()
+
     ydl_opts = {
-        **_get_base_opts(),
+        **_get_base_opts(cookie=used_cookie),
         "format": fmt,
         "format_sort": ["ext:mp4:m4a:webm", "res", "size"],  # 偏好 mp4 但不强制
         "outtmpl": str(job_dir / "%(title)s.%(ext)s"),
@@ -606,7 +689,11 @@ def run_download(job_id: str, url: str, quality: str):
         )
 
     except Exception as e:
-        update_job(job_id, status="error", error=str(e), completed_at=time.time())
+        err_str = str(e)
+        # auth/bot 错误 → 使用的 cookie 已失效，自动删除
+        if used_cookie and used_cookie.exists() and _is_auth_error(err_str):
+            _remove_cookie_file(used_cookie)
+        update_job(job_id, status="error", error=err_str, completed_at=time.time())
 
 
 # ──────────────────────────────────────────────
@@ -856,16 +943,37 @@ def api_history():
 
 @app.route("/api/cookies/pool")
 def api_cookies_pool():
-    """返回 cookie 池列表。"""
+    """返回 cookie 池列表，附带每个 cookie 的使用状态。"""
     pool = get_cookie_pool()
-    return jsonify([
-        {
-            "id": p.stem,
+    now = time.time()
+    result = []
+    for p in pool:
+        if not p.exists():
+            continue
+        cid = p.stem
+        with _cookie_status_lock:
+            st = dict(_cookie_status.get(cid, {"valid": None, "use_count": 0, "last_used": None, "checking": False}))
+        last_used = st.get("last_used")
+        if last_used:
+            secs = int(now - last_used)
+            if secs < 60:
+                last_used_ago = f"{secs}秒前"
+            elif secs < 3600:
+                last_used_ago = f"{secs // 60}分钟前"
+            else:
+                last_used_ago = f"{secs // 3600}小时前"
+        else:
+            last_used_ago = None
+        result.append({
+            "id": cid,
             "name": p.name,
             "size_kb": round(p.stat().st_size / 1024, 1),
-        }
-        for p in pool if p.exists()
-    ])
+            "valid": st.get("valid"),       # True / False / None
+            "checking": st.get("checking", False),
+            "use_count": st.get("use_count", 0),
+            "last_used_ago": last_used_ago,
+        })
+    return jsonify(result)
 
 
 @app.route("/api/cookies/status")
@@ -880,50 +988,33 @@ def api_cookies_upload():
     if not f:
         return jsonify({"error": "未收到文件"}), 400
     fname = f"yt_{uuid.uuid4().hex[:8]}.txt"
+    cid = fname[:-4]  # 去掉 .txt
     (COOKIES_DIR / fname).write_bytes(f.read())
+    # 初始化状态为未验证
+    with _cookie_status_lock:
+        _ensure_cookie_status(cid)
     return jsonify({"ok": True, "count": len(get_cookie_pool())})
 
 
-@app.route("/api/cookies/delete", methods=["POST"])
-def api_cookies_delete():
-    """清空整个 cookie 池。"""
-    for p in get_cookie_pool():
-        p.unlink(missing_ok=True)
-    return jsonify({"ok": True, "count": 0})
-
-
-@app.route("/api/cookies/delete/<cookie_id>", methods=["POST"])
-def api_cookies_delete_one(cookie_id: str):
-    """删除指定 cookie（路径穿越防护：id 必须匹配 yt_[a-f0-9]{8}）。"""
-    if not re.match(r"^yt_[a-f0-9]{8}$", cookie_id):
-        return jsonify({"error": "invalid id"}), 400
-    target = COOKIES_DIR / f"{cookie_id}.txt"
-    target.unlink(missing_ok=True)
-    return jsonify({"ok": True, "count": len(get_cookie_pool())})
-
-
-@app.route("/api/cookies/check", methods=["POST"])
-def api_cookies_check():
-    """用池中第一个 cookie 验证 YouTube 访问是否正常。"""
+@app.route("/api/cookies/check_all", methods=["POST"])
+def api_cookies_check_all():
+    """在后台逐一检测所有 cookie 是否有效，失效的自动删除。"""
     pool = get_cookie_pool()
     if not pool:
-        return jsonify({"valid": False, "reason": "未配置 Cookie"})
-    try:
-        opts = {
-            **_get_base_opts(),
-            "skip_download": True,
-            "quiet": True,
-            "no_warnings": True,
-            "cookiefile": str(pool[0]),  # 固定用第一个测试，不消耗轮询位置
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info("https://www.youtube.com/watch?v=BjUShsxq4wU", download=False)
-        return jsonify({"valid": True})
-    except Exception as e:
-        msg = str(e)
-        if "Sign in" in msg or "bot" in msg.lower():
-            return jsonify({"valid": False, "reason": "Cookie 可能已失效，请重新上传"})
-        return jsonify({"valid": True})
+        return jsonify({"ok": True, "checking": 0})
+    # 标记全部为"检测中"
+    with _cookie_status_lock:
+        for p in pool:
+            s = _ensure_cookie_status(p.stem)
+            s["checking"] = True
+
+    def _run():
+        for p in list(pool):   # list 快照，防止中途被删
+            if p.exists():
+                _check_single_cookie(p)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "checking": len(pool)})
 
 
 @app.route("/api/job/<job_id>")
