@@ -104,6 +104,13 @@ def _get_base_opts() -> dict:
 jobs: dict = {}
 jobs_lock = threading.Lock()
 
+# ── 任务队列（并发控制）──────────────────────────────────────────
+# 最多同时运行 MAX_CONCURRENT_DOWNLOADS 个下载，超出时自动排队
+MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("MAX_CONCURRENT_DOWNLOADS", "3"))
+_download_sem = threading.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+_pending_lock = threading.Lock()
+_pending_jobs: list = []   # 正在等待 semaphore 的 job_id（有序）
+
 
 # ──────────────────────────────────────────────
 # 工具函数
@@ -112,8 +119,9 @@ jobs_lock = threading.Lock()
 def make_job(job_id: str, url: str = "", user_id: str = ""):
     with jobs_lock:
         jobs[job_id] = {
-            "status": "pending",   # pending | downloading | merging | translating | burning | done | error
+            "status": "pending",   # pending | queued | downloading | merging | translating | burning | done | error
             "progress": 0,
+            "queue_pos": 0,        # 排队位置：0=立即运行，1+=等待队列位置
             "speed": "",
             "eta": "",
             "title": "",
@@ -167,6 +175,40 @@ def clean_old_jobs():
                 to_delete.append(jid)
         for jid in to_delete:
             del jobs[jid]
+
+
+def submit_download(job_id: str, url: str, quality: str, burn_subtitle: bool):
+    """
+    将下载任务加入并发队列。
+    若并发数已满（由 MAX_CONCURRENT_DOWNLOADS 控制），任务自动进入排队状态，
+    等待前序任务完成后再开始执行。支持多任务同时进行。
+    """
+    with _pending_lock:
+        _pending_jobs.append(job_id)
+        pos = len(_pending_jobs)   # 1-based，在所有等待线程中的位置
+    update_job(job_id, queue_pos=pos)
+
+    def _worker():
+        # 非阻塞尝试获取槽位；若满则标记为排队状态再阻塞等待
+        if not _download_sem.acquire(blocking=False):
+            update_job(job_id, status="queued")
+            _download_sem.acquire()   # 阻塞直到有空闲槽
+
+        # 获得槽位：从等待列表移除，并刷新其余任务的排队位置
+        with _pending_lock:
+            if job_id in _pending_jobs:
+                _pending_jobs.remove(job_id)
+            for i, jid in enumerate(_pending_jobs):
+                update_job(jid, queue_pos=i + 1)
+
+        try:
+            run_download(job_id, url, quality, burn_subtitle)
+        finally:
+            _download_sem.release()
+            # 任务结束后，若队列中仍有任务，位置已在下一个 acquire 时自动更新
+
+    t = threading.Thread(target=_worker, daemon=True, name=f"dl-{job_id[:8]}")
+    t.start()
 
 
 # ──────────────────────────────────────────────
@@ -663,13 +705,7 @@ def api_download():
 
     job_id = uuid.uuid4().hex
     make_job(job_id, url=url, user_id=g.uid)
-
-    thread = threading.Thread(
-        target=run_download,
-        args=(job_id, url, quality, burn_subtitle),
-        daemon=True,
-    )
-    thread.start()
+    submit_download(job_id, url, quality, burn_subtitle)
 
     return jsonify({"job_id": job_id})
 
@@ -826,6 +862,42 @@ def api_cookies_check():
         if "Sign in" in msg or "bot" in msg.lower():
             return jsonify({"valid": False, "reason": "Cookie 可能已失效，请重新上传"})
         return jsonify({"valid": True})
+
+
+@app.route("/api/job/<job_id>")
+def api_job(job_id: str):
+    """返回单个任务的当前完整状态（用于页面刷新后恢复进度）"""
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"error": "任务不存在或已过期"}), 404
+    # 只允许任务归属用户访问（user_id 为空则不限制，兼容旧任务）
+    if job.get("user_id") and job.get("user_id") != g.uid:
+        return jsonify({"error": "无权访问"}), 403
+    return jsonify({**job, "job_id": job_id})
+
+
+@app.route("/api/jobs/active")
+def api_jobs_active():
+    """返回当前用户所有未完成的任务（pending/queued/downloading/merging/translating/burning）"""
+    uid = g.uid
+    terminal_statuses = {"done", "error"}
+    with jobs_lock:
+        active = [
+            {
+                "job_id": jid,
+                "status": info.get("status"),
+                "progress": info.get("progress", 0),
+                "queue_pos": info.get("queue_pos", 0),
+                "title": info.get("title", ""),
+                "url": info.get("url", ""),
+                "created_at": info.get("created_at"),
+            }
+            for jid, info in jobs.items()
+            if info.get("status") not in terminal_statuses
+            and info.get("user_id", "") == uid
+        ]
+    active.sort(key=lambda x: x.get("created_at") or 0, reverse=True)
+    return jsonify(active)
 
 
 if __name__ == "__main__":

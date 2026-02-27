@@ -686,6 +686,22 @@
   let sseSource = null;
   let infoTimer = null;
 
+  // ── 任务状态标签 ──
+  function getStatusLabel(status, queuePos) {
+    switch (status) {
+      case 'queued':
+        return queuePos > 0 ? `排队中... 前方还有 ${queuePos} 个任务` : '即将开始...';
+      case 'pending':    return '准备下载...';
+      case 'downloading': return '下载中';
+      case 'merging':    return '合并中...';
+      case 'translating': return '翻译字幕中...';
+      case 'burning':    return '烧录字幕中...';
+      case 'done':       return '完成';
+      case 'error':      return '下载失败';
+      default:           return '处理中...';
+    }
+  }
+
   // ── DOM ──
   const urlInput      = document.getElementById('url-input');
   const btnPaste      = document.getElementById('btn-paste');
@@ -786,6 +802,7 @@
       if (data.error) { showError(data.error); setDownloading(false); return; }
 
       currentJobId = data.job_id;
+      localStorage.setItem('activeJobId', data.job_id);
       listenProgress(currentJobId);
     } catch (e) {
       showError('网络错误：' + e.message);
@@ -804,7 +821,14 @@
       errCount = 0; // 收到消息即重置错误计数
       const job = JSON.parse(e.data);
 
-      if (job.status === 'downloading') {
+      if (job.status === 'queued' || job.status === 'pending') {
+        // 排队等待中
+        const pos = job.queue_pos || 0;
+        const msg = pos > 0 ? `排队中... 前方还有 ${pos} 个任务` : '即将开始...';
+        setProgress(0, msg);
+        speedText.textContent = '';
+        etaText.textContent   = '';
+      } else if (job.status === 'downloading') {
         setProgress(job.progress, '下载中');
         speedText.textContent = job.speed ? `速度：${job.speed}` : '';
         etaText.textContent   = job.eta   ? `剩余：${job.eta}`  : '';
@@ -823,28 +847,78 @@
       } else if (job.status === 'done') {
         finished = true;
         sseSource.close();
+        localStorage.removeItem('activeJobId');
         setProgress(100, '完成');
         setTimeout(() => showResult(jobId, job), 400);
       } else if (job.status === 'error') {
         finished = true;
         sseSource.close();
+        localStorage.removeItem('activeJobId');
         showError(job.error || '下载失败');
         setDownloading(false);
         progressWrap.classList.remove('show');
       }
     };
 
-    // SSE 断线时：浏览器会自动重连，连续 4 次仍失败才提示用户
+    // SSE 断线时浏览器会自动重连；只在持续失败（约2.5分钟）后才提示用户
     sseSource.onerror = () => {
       if (finished) { sseSource.close(); return; }
       errCount++;
-      if (errCount >= 4) {
+      if (errCount >= 30) {
         sseSource.close();
-        showError('连接已断开，请重新尝试下载');
+        showError('连接持续断开，请刷新页面查看任务进度');
         setDownloading(false);
         progressWrap.classList.remove('show');
       }
     };
+  }
+
+  // ── 页面刷新后恢复进行中的任务 ──
+  async function recoverActiveJob() {
+    // 优先从服务器查询当前用户的活跃任务
+    try {
+      const res = await fetch('/api/jobs/active');
+      if (res.ok) {
+        const activeJobs = await res.json();
+        if (activeJobs.length > 0) {
+          const job = activeJobs[0]; // 取最新的一个
+          currentJobId = job.job_id;
+          localStorage.setItem('activeJobId', job.job_id);
+          progressWrap.classList.add('show');
+          setProgress(job.progress || 0, getStatusLabel(job.status, job.queue_pos));
+          setDownloading(true);
+          listenProgress(job.job_id);
+          return;
+        }
+      }
+    } catch (_) {}
+
+    // 回退：从 localStorage 读取保存的 jobId
+    const savedJobId = localStorage.getItem('activeJobId');
+    if (!savedJobId) return;
+
+    try {
+      const res = await fetch(`/api/job/${savedJobId}`);
+      if (!res.ok) { localStorage.removeItem('activeJobId'); return; }
+      const job = await res.json();
+      if (job.error) { localStorage.removeItem('activeJobId'); return; }
+
+      if (job.status === 'done') {
+        localStorage.removeItem('activeJobId');
+        showResult(savedJobId, job);
+      } else if (job.status === 'error') {
+        localStorage.removeItem('activeJobId');
+      } else {
+        // 仍在进行中，重新连接 SSE
+        currentJobId = savedJobId;
+        progressWrap.classList.add('show');
+        setProgress(job.progress || 0, getStatusLabel(job.status, job.queue_pos));
+        setDownloading(true);
+        listenProgress(savedJobId);
+      }
+    } catch (_) {
+      localStorage.removeItem('activeJobId');
+    }
   }
 
   function showResult(jobId, job) {
@@ -877,6 +951,8 @@
 
   // ── 继续下载 ──
   btnNew.addEventListener('click', () => {
+    if (sseSource) { sseSource.close(); sseSource = null; }
+    localStorage.removeItem('activeJobId');
     urlInput.value = '';
     preview.classList.remove('show');
     resultWrap.classList.remove('show');
@@ -995,6 +1071,9 @@
   };
 
   loadCookiePool();
+
+  // 页面加载时自动恢复进行中的任务（刷新页面不断任务）
+  recoverActiveJob();
 
   // ── 下载历史 ──
   const cardHistory = document.getElementById('card-history');
