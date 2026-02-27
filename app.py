@@ -17,23 +17,20 @@ import subprocess
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, Response, send_file
 
-# 自动安装依赖
+# 自动安装/升级依赖
 def ensure_deps():
-    try:
-        import yt_dlp
-    except ImportError:
-        print("正在安装 yt-dlp ...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "yt-dlp"])
-    try:
-        import flask
-    except ImportError:
-        print("正在安装 flask ...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "flask"])
-    try:
-        import deep_translator
-    except ImportError:
-        print("正在安装 deep-translator ...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "deep-translator"])
+    # yt-dlp 必须保持最新，旧版本会导致格式识别失败
+    print("正在升级 yt-dlp ...")
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+        stdout=subprocess.DEVNULL,
+    )
+    for package, import_name in [("flask", "flask"), ("deep-translator", "deep_translator")]:
+        try:
+            __import__(import_name)
+        except ImportError:
+            print(f"正在安装 {package} ...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 ensure_deps()
 
