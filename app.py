@@ -47,17 +47,27 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 
 COOKIES_FILE = _BASE_DIR / "cookies.txt"
 
-# yt-dlp 通用选项：使用 iOS 客户端绕过机器人检测，同时保留 web 作为备选
-_YDL_BASE_OPTS: dict = {
-    "quiet": True,
-    "no_warnings": True,
-    "nocheckcertificate": True,
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["ios", "web"],
-        }
-    },
-}
+
+def _get_base_opts() -> dict:
+    """
+    动态构建 yt-dlp 基础选项。
+    - 有 cookies：使用 web 客户端（cookies 只对 web 客户端有效）
+    - 无 cookies：使用 ios 客户端（规避机器人检测）
+    """
+    has_cookies = COOKIES_FILE.exists()
+    opts: dict = {
+        "quiet": True,
+        "no_warnings": True,
+        "nocheckcertificate": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["web"] if has_cookies else ["ios", "mweb", "web"],
+            }
+        },
+    }
+    if has_cookies:
+        opts["cookiefile"] = str(COOKIES_FILE)
+    return opts
 
 # 任务状态存储 { job_id: { status, progress, speed, eta, filename, error } }
 jobs: dict = {}
@@ -286,7 +296,7 @@ def _download_subtitle(url: str, job_dir: Path) -> Path | None:
     """单独下载字幕，429/网络错误时返回 None（优雅降级）。"""
     import time
     sub_opts = {
-        **_YDL_BASE_OPTS,
+        **_get_base_opts(),
         "skip_download": True,
         "writesubtitles": True,
         "writeautomaticsub": True,
@@ -297,8 +307,6 @@ def _download_subtitle(url: str, job_dir: Path) -> Path | None:
         "sleep_interval": 2,
         "max_sleep_interval": 8,
     }
-    if COOKIES_FILE.exists():
-        sub_opts["cookiefile"] = str(COOKIES_FILE)
     for attempt in range(3):
         try:
             with yt_dlp.YoutubeDL(sub_opts) as ydl:
@@ -354,7 +362,7 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
         }]
 
     ydl_opts = {
-        **_YDL_BASE_OPTS,
+        **_get_base_opts(),
         "format": fmt,
         "format_sort": ["ext:mp4:m4a:webm", "res", "size"],  # 偏好 mp4 但不强制
         "outtmpl": str(job_dir / "%(title)s.%(ext)s"),
@@ -362,8 +370,6 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
         "progress_hooks": [progress_hook],
         "postprocessors": postprocessors,
     }
-    if COOKIES_FILE.exists():
-        ydl_opts["cookiefile"] = str(COOKIES_FILE)
     if not is_audio:
         ydl_opts["merge_output_format"] = "mp4"
 
@@ -462,9 +468,7 @@ def api_info():
         return jsonify({"error": "请输入视频链接"}), 400
 
     try:
-        ydl_opts = {**_YDL_BASE_OPTS, "skip_download": True}
-        if COOKIES_FILE.exists():
-            ydl_opts["cookiefile"] = str(COOKIES_FILE)
+        ydl_opts = {**_get_base_opts(), "skip_download": True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
