@@ -82,13 +82,18 @@ jobs_lock = threading.Lock()
 def make_job(job_id: str, url: str = ""):
     with jobs_lock:
         jobs[job_id] = {
-            "status": "pending",   # pending | downloading | translating | burning | done | error
+            "status": "pending",   # pending | downloading | merging | translating | burning | done | error
             "progress": 0,
             "speed": "",
             "eta": "",
             "title": "",
-            "filename": None,
-            "filepath": None,
+            "filename": None,           # backward compat (= original_filename)
+            "filepath": None,           # backward compat (= original_filepath)
+            "original_filepath": None,
+            "original_filename": None,
+            "burned_filepath": None,
+            "burned_filename": None,
+            "burn_error": None,
             "error": None,
             "url": url,
             "created_at": time.time(),
@@ -113,15 +118,22 @@ def clean_old_jobs():
     with jobs_lock:
         to_delete = []
         for jid, info in jobs.items():
-            if info.get("status") in ("done", "error"):
-                fp = info.get("filepath")
-                if fp and Path(fp).exists():
-                    try:
-                        if Path(fp).stat().st_mtime < cutoff:
-                            Path(fp).unlink(missing_ok=True)
-                            to_delete.append(jid)
-                    except Exception:
-                        pass
+            if info.get("status") not in ("done", "error"):
+                continue
+            expired = False
+            for fp_key in ("original_filepath", "burned_filepath", "filepath"):
+                fp = info.get(fp_key)
+                if not fp:
+                    continue
+                p = Path(fp)
+                try:
+                    if p.exists() and p.stat().st_mtime < cutoff:
+                        p.unlink(missing_ok=True)
+                        expired = True
+                except Exception:
+                    pass
+            if expired:
+                to_delete.append(jid)
         for jid in to_delete:
             del jobs[jid]
 
@@ -286,14 +298,15 @@ def _translate_srt_to_chinese(srt_path: Path) -> Path:
     return _fix_srt_overlaps(out_path)
 
 
-def _burn_subtitle(video_path: Path, sub_path: Path, output_path: Path) -> None:
-    """用 ffmpeg 将字幕硬烧录到视频（需要 libass + Noto CJK 字体）。"""
+def _burn_subtitle_with_progress(
+    video_path: Path, sub_path: Path, output_path: Path, progress_cb=None
+) -> None:
+    """用 ffmpeg 将字幕硬烧录到视频，通过 -progress pipe:1 实时回调编码进度。"""
     simple_sub = video_path.parent / "burn_sub.srt"
     shutil.copy(str(sub_path), str(simple_sub))
     abs_sub = str(simple_sub.resolve()).replace("\\", "\\\\").replace(":", "\\:")
 
     # 使用 Noto Sans CJK SC 确保中文字符正确渲染
-    # fonts-noto-cjk 已在 Dockerfile/render.yaml 中安装
     style = (
         "FontName=Noto Sans CJK SC,"
         "FontSize=24,"
@@ -304,6 +317,23 @@ def _burn_subtitle(video_path: Path, sub_path: Path, output_path: Path) -> None:
         "Bold=0,"
         "MarginV=20"
     )
+
+    # 先用 ffprobe 取视频时长（微秒），用于计算百分比
+    duration_us = 0.0
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(video_path),
+            ],
+            capture_output=True, text=True,
+        )
+        duration_us = float(probe.stdout.strip()) * 1_000_000
+    except Exception:
+        pass
+
     cmd = [
         "ffmpeg", "-y",
         "-i", str(video_path),
@@ -312,13 +342,44 @@ def _burn_subtitle(video_path: Path, sub_path: Path, output_path: Path) -> None:
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "23",
+        "-progress", "pipe:1",
+        "-nostats",
         str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, cwd=str(video_path.parent))
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(video_path.parent),
+    )
+
+    # 单独线程消费 stderr，防止缓冲区满死锁
+    stderr_chunks: list[str] = []
+    def _read_stderr():
+        for line in proc.stderr:
+            stderr_chunks.append(line)
+    t = threading.Thread(target=_read_stderr, daemon=True)
+    t.start()
+
+    # 从 stdout 读取 -progress 输出并回调进度
+    for line in proc.stdout:
+        line = line.strip()
+        if line.startswith("out_time_us=") and duration_us > 0 and progress_cb:
+            try:
+                cur_us = int(line.split("=")[1])
+                pct = min(99, int(cur_us / duration_us * 100))
+                progress_cb(pct)
+            except (ValueError, ZeroDivisionError):
+                pass
+
+    proc.wait()
+    t.join(timeout=5)
     simple_sub.unlink(missing_ok=True)
-    if result.returncode != 0:
+    if proc.returncode != 0:
         raise RuntimeError(
-            "ffmpeg 字幕烧录失败：" + result.stderr.decode(errors="replace")[-800:]
+            "ffmpeg 字幕烧录失败：" + "".join(stderr_chunks)[-800:]
         )
 
 
@@ -435,6 +496,13 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
         else:
             output_file = max(video_files, key=lambda f: f.stat().st_size)
 
+        # 保存原始文件信息（烧录流程前确立，无论后续是否烧录）
+        update_job(
+            job_id,
+            original_filepath=str(output_file),
+            original_filename=output_file.name,
+        )
+
         # ── 字幕烧录流程 ──
         if burn_subtitle:
             # 单独下载字幕，失败时优雅降级（不影响视频）
@@ -452,27 +520,32 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
                     update_job(job_id, status="translating", progress=99)
                     sub_file = _translate_srt_to_chinese(sub_file)
 
-                # 烧录（失败时降级：保留原视频，不报错）
-                update_job(job_id, status="burning", progress=99)
+                # 烧录到独立文件（保留原视频）
+                update_job(job_id, status="burning", progress=0)
                 burned_output = output_file.parent / (output_file.stem + "_subbed.mp4")
+
+                def burn_progress_cb(pct: int):
+                    update_job(job_id, status="burning", progress=pct)
+
                 try:
-                    _burn_subtitle(output_file, sub_file, burned_output)
-                    # 用烧录后文件替代原文件
-                    output_file.unlink(missing_ok=True)
-                    output_file = burned_output
+                    _burn_subtitle_with_progress(output_file, sub_file, burned_output, burn_progress_cb)
+                    update_job(
+                        job_id,
+                        burned_filepath=str(burned_output),
+                        burned_filename=burned_output.name,
+                    )
                 except Exception as burn_err:
-                    # 烧录失败：清理临时文件，继续使用原视频
                     burned_output.unlink(missing_ok=True)
-                    update_job(job_id, error=f"字幕烧录失败（已返回原视频）：{burn_err}")
-            # 若无字幕或烧录失败，忽略字幕步骤，直接返回原视频
+                    update_job(job_id, burn_error=f"字幕烧录失败（可下载原始视频）：{burn_err}")
+            # 若无字幕或烧录失败，仍提供原始视频
 
         update_job(
             job_id,
             status="done",
             progress=100,
             title=title,
-            filename=output_file.name,
-            filepath=str(output_file),
+            filename=output_file.name,      # backward compat
+            filepath=str(output_file),      # backward compat
             completed_at=time.time(),
         )
 
@@ -570,23 +643,35 @@ def api_progress(job_id: str):
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-@app.route("/api/file/<job_id>")
-def api_file(job_id: str):
-    """下载完成后提供文件"""
+def _serve_job_file(job_id: str, file_type: str):
+    """通用文件下载：file_type = 'original' | 'burned'"""
     job = get_job(job_id)
     if not job or job["status"] != "done":
         return jsonify({"error": "文件未就绪"}), 404
 
-    filepath = job.get("filepath")
+    if file_type == "burned":
+        filepath = job.get("burned_filepath")
+        filename = job.get("burned_filename", "video_subbed.mp4")
+    else:
+        filepath = job.get("original_filepath") or job.get("filepath")
+        filename = job.get("original_filename") or job.get("filename", "video.mp4")
+
     if not filepath or not Path(filepath).exists():
         return jsonify({"error": "文件不存在"}), 404
 
-    filename = job.get("filename", "video.mp4")
-    return send_file(
-        filepath,
-        as_attachment=True,
-        download_name=filename,
-    )
+    return send_file(filepath, as_attachment=True, download_name=filename)
+
+
+@app.route("/api/file/<job_id>")
+def api_file(job_id: str):
+    """下载原始文件（向后兼容）"""
+    return _serve_job_file(job_id, "original")
+
+
+@app.route("/api/file/<job_id>/<file_type>")
+def api_file_typed(job_id: str, file_type: str):
+    """下载指定类型文件：original 或 burned"""
+    return _serve_job_file(job_id, file_type)
 
 
 @app.route("/api/history")
@@ -597,7 +682,8 @@ def api_history():
             {
                 "job_id": jid,
                 "title": info.get("title", ""),
-                "filename": info.get("filename", ""),
+                "filename": info.get("original_filename") or info.get("filename", ""),
+                "burned_filename": info.get("burned_filename"),
                 "url": info.get("url", ""),
                 "completed_at": info.get("completed_at"),
                 "status": info.get("status"),
