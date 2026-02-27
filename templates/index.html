@@ -397,76 +397,48 @@
 
     #error-wrap.show { display: block; }
 
-    /* ── Subtitle Toggle ── */
-    .subtitle-toggle {
-      display: flex;
+    /* ── Burn Button ── */
+    #btn-burn {
+      display: inline-flex;
       align-items: center;
-      justify-content: space-between;
+      gap: 7px;
       margin-top: 14px;
-      padding: 12px 14px;
-      background: var(--surface2);
-      border: 1.5px solid var(--border);
-      border-radius: 12px;
-      cursor: pointer;
-      user-select: none;
-      transition: border-color .2s;
-    }
-
-    .subtitle-toggle.active {
-      border-color: var(--accent);
-      background: rgba(124,106,247,.08);
-    }
-
-    .subtitle-toggle .st-label {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    .subtitle-toggle .st-title {
-      font-size: .88rem;
+      padding: 12px 26px;
+      background: none;
+      border: 1.5px solid var(--accent);
+      border-radius: 14px;
+      color: var(--accent2);
+      font-size: .95rem;
       font-weight: 600;
-      color: var(--text);
+      cursor: pointer;
+      transition: background .2s, color .2s;
     }
+    #btn-burn:hover { background: rgba(124,106,247,.12); }
+    #btn-burn:disabled { opacity: .55; cursor: default; }
 
-    .subtitle-toggle .st-desc {
-      font-size: .72rem;
+    #burn-progress-area {
+      margin-top: 10px;
+      width: 100%;
+      max-width: 320px;
+    }
+    #burn-status-text {
+      font-size: .8rem;
       color: var(--text2);
+      margin-bottom: 6px;
     }
-
-    /* Switch */
-    .switch {
-      position: relative;
-      width: 44px;
-      height: 24px;
-      flex-shrink: 0;
-    }
-
-    .switch input { display: none; }
-
-    .switch-track {
-      position: absolute;
-      inset: 0;
+    #burn-progress-bar-bg {
+      height: 5px;
       background: var(--border);
       border-radius: 99px;
-      transition: background .2s;
+      overflow: hidden;
     }
-
-    .switch input:checked + .switch-track { background: var(--accent); }
-
-    .switch-thumb {
-      position: absolute;
-      top: 3px;
-      left: 3px;
-      width: 18px;
-      height: 18px;
-      background: #fff;
-      border-radius: 50%;
-      transition: transform .2s;
-      pointer-events: none;
+    #burn-progress-bar {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 99px;
+      width: 0%;
+      transition: width .4s;
     }
-
-    .switch input:checked ~ .switch-thumb { transform: translateX(20px); }
 
     /* ── Tips ── */
     .tips {
@@ -582,21 +554,6 @@
 </div>
 
 
-<!-- 字幕烧录选项 -->
-<div class="card" id="card-subtitle">
-  <div class="subtitle-toggle" id="subtitle-toggle">
-    <div class="st-label" onclick="document.getElementById('subtitle-check').click()" style="cursor:pointer">
-      <span class="st-title">🀄 中文字幕烧录</span>
-      <span class="st-desc">下载字幕 → 翻译为中文 → 硬烧录到视频</span>
-    </div>
-    <label class="switch">
-      <input type="checkbox" id="subtitle-check" />
-      <span class="switch-track"></span>
-      <span class="switch-thumb"></span>
-    </label>
-  </div>
-</div>
-
 <!-- Cookie 轮询池卡片 -->
 <div class="card" id="card-cookie">
   <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;">
@@ -660,6 +617,14 @@
       </a>
       <div id="burn-error" style="display:none"></div>
     </div>
+    <!-- 烧录按钮 + 进度（下载完成后显示） -->
+    <div id="burn-action" style="display:none;flex-direction:column;align-items:center">
+      <button id="btn-burn">🀄 烧录中文字幕</button>
+      <div id="burn-progress-area" style="display:none">
+        <div id="burn-status-text">处理中...</div>
+        <div id="burn-progress-bar-bg"><div id="burn-progress-bar"></div></div>
+      </div>
+    </div>
     <button class="btn-new" id="btn-new">继续下载</button>
   </div>
 </div>
@@ -721,17 +686,16 @@
   const resultTitle   = document.getElementById('result-title');
   const btnSave       = document.getElementById('btn-save');
   const btnSaveLabel  = document.getElementById('btn-save-label');
-  const btnSaveBurned = document.getElementById('btn-save-burned');
-  const burnErrorEl   = document.getElementById('burn-error');
-  const btnNew        = document.getElementById('btn-new');
-  const subtitleCheck = document.getElementById('subtitle-check');
-  const subtitleToggle= document.getElementById('subtitle-toggle');
+  const btnSaveBurned    = document.getElementById('btn-save-burned');
+  const burnErrorEl      = document.getElementById('burn-error');
+  const btnNew           = document.getElementById('btn-new');
+  const btnBurn          = document.getElementById('btn-burn');
+  const burnAction       = document.getElementById('burn-action');
+  const burnProgressArea = document.getElementById('burn-progress-area');
+  const burnStatusText   = document.getElementById('burn-status-text');
+  const burnProgressBar  = document.getElementById('burn-progress-bar');
 
-  // ── 字幕开关同步样式 ──
-  subtitleCheck.addEventListener('change', () => {
-    subtitleToggle.classList.toggle('active', subtitleCheck.checked);
-  });
-
+  let burnPollTimer = null;
 
   // ── 粘贴 ──
   btnPaste.addEventListener('click', async () => {
@@ -795,7 +759,6 @@
         body: JSON.stringify({
           url,
           quality: selectedQuality,
-          burn_subtitle: subtitleCheck.checked,
         }),
       });
       const data = await res.json();
@@ -931,14 +894,31 @@
     btnSave.href = `/api/file/${jobId}/original`;
     btnSave.download = origFilename;
 
+    const burnSt = job.burn_status || 'idle';
+
     if (job.burned_filename) {
+      // 已烧录完成
       btnSaveLabel.textContent = '原始视频';
       btnSaveBurned.href = `/api/file/${jobId}/burned`;
       btnSaveBurned.download = job.burned_filename;
       btnSaveBurned.style.display = 'inline-flex';
+      burnAction.style.display = 'none';
     } else {
       btnSaveLabel.textContent = '保存到设备';
       btnSaveBurned.style.display = 'none';
+      // 显示烧录按钮区
+      burnAction.style.display = 'flex';
+      if (burnSt === 'idle' || burnSt === 'error') {
+        btnBurn.disabled = false;
+        btnBurn.textContent = '🀄 烧录中文字幕';
+        burnProgressArea.style.display = 'none';
+      } else {
+        // 正在烧录（pending/translating/burning）
+        btnBurn.disabled = true;
+        burnProgressArea.style.display = 'block';
+        updateBurnProgressUI(burnSt, job.burn_progress || 0);
+        if (!burnPollTimer) startBurnPoll(jobId);
+      }
     }
 
     if (job.burn_error) {
@@ -949,9 +929,76 @@
     }
   }
 
+  function updateBurnProgressUI(status, pct) {
+    if (status === 'translating' || status === 'pending') {
+      burnStatusText.textContent = '翻译字幕中...';
+      burnProgressBar.style.width = '30%';
+    } else if (status === 'burning') {
+      burnStatusText.textContent = `烧录中 ${pct}%`;
+      burnProgressBar.style.width = pct + '%';
+    }
+  }
+
+  // ── 烧录按钮点击 ──
+  btnBurn.addEventListener('click', async () => {
+    if (!currentJobId) return;
+    btnBurn.disabled = true;
+    burnProgressArea.style.display = 'block';
+    burnStatusText.textContent = '准备中...';
+    burnProgressBar.style.width = '0%';
+    burnErrorEl.style.display = 'none';
+
+    try {
+      const res = await fetch(`/api/burn/${currentJobId}`, { method: 'POST' });
+      const data = await res.json();
+      if (data.error) {
+        burnErrorEl.textContent = '⚠️ ' + data.error;
+        burnErrorEl.style.display = 'block';
+        btnBurn.disabled = false;
+        burnProgressArea.style.display = 'none';
+        return;
+      }
+      startBurnPoll(currentJobId);
+    } catch (e) {
+      burnErrorEl.textContent = '⚠️ 网络错误：' + e.message;
+      burnErrorEl.style.display = 'block';
+      btnBurn.disabled = false;
+      burnProgressArea.style.display = 'none';
+    }
+  });
+
+  function startBurnPoll(jobId) {
+    if (burnPollTimer) clearInterval(burnPollTimer);
+    burnPollTimer = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/job/${jobId}`);
+        if (!res.ok) return;
+        const job = await res.json();
+        const st = job.burn_status || 'idle';
+
+        if (st === 'done') {
+          clearInterval(burnPollTimer); burnPollTimer = null;
+          // 刷新结果区显示烧录版下载
+          showResult(jobId, job);
+          loadHistory();
+        } else if (st === 'error') {
+          clearInterval(burnPollTimer); burnPollTimer = null;
+          burnProgressArea.style.display = 'none';
+          btnBurn.disabled = false;
+          btnBurn.textContent = '🀄 重新烧录';
+          burnErrorEl.textContent = '⚠️ ' + (job.burn_error || '烧录失败');
+          burnErrorEl.style.display = 'block';
+        } else {
+          updateBurnProgressUI(st, job.burn_progress || 0);
+        }
+      } catch (_) {}
+    }, 1000);
+  }
+
   // ── 继续下载 ──
   btnNew.addEventListener('click', () => {
     if (sseSource) { sseSource.close(); sseSource = null; }
+    if (burnPollTimer) { clearInterval(burnPollTimer); burnPollTimer = null; }
     localStorage.removeItem('activeJobId');
     urlInput.value = '';
     preview.classList.remove('show');
@@ -960,10 +1007,10 @@
     hideError();
     setProgress(0, '准备中...');
     currentJobId = null;
-    subtitleCheck.checked = false;
-    subtitleToggle.classList.remove('active');
     btnSaveBurned.style.display = 'none';
     burnErrorEl.style.display = 'none';
+    burnAction.style.display = 'none';
+    burnProgressArea.style.display = 'none';
     btnSaveLabel.textContent = '保存到设备';
     urlInput.focus();
   });
@@ -1098,10 +1145,16 @@
         if (!done.length) { cardHistory.style.display = 'none'; return; }
         cardHistory.style.display = '';
         historyList.innerHTML = done.map(item => {
-          const dlLinks = item.burned_filename
-            ? `<a class="history-dl" href="/api/file/${item.job_id}/original" download="${item.filename || 'video'}">↓ 原始</a>
-               <a class="history-dl" href="/api/file/${item.job_id}/burned" download="${item.burned_filename}" style="margin-left:6px">↓ 烧录</a>`
-            : `<a class="history-dl" href="/api/file/${item.job_id}/original" download="${item.filename || 'video'}">↓ 重新保存</a>`;
+          const burnSt = item.burn_status || 'idle';
+          let burnBtn = '';
+          if (item.burned_filename) {
+            burnBtn = `<a class="history-dl" href="/api/file/${item.job_id}/burned" download="${item.burned_filename}" style="margin-left:6px">↓ 烧录版</a>`;
+          } else if (burnSt === 'translating' || burnSt === 'burning' || burnSt === 'pending') {
+            burnBtn = `<span class="history-dl" style="margin-left:6px;opacity:.5;cursor:default">烧录中...</span>`;
+          } else {
+            burnBtn = `<button class="history-dl history-burn-btn" data-jobid="${item.job_id}" style="margin-left:6px;background:none;border:1px solid var(--accent);color:var(--accent2);border-radius:8px;padding:4px 10px;cursor:pointer;font-size:.75rem">🀄 烧录</button>`;
+          }
+          const dlLinks = `<a class="history-dl" href="/api/file/${item.job_id}/original" download="${item.filename || 'video'}">↓ 保存</a>${burnBtn}`;
           return `
           <div class="history-item" data-url="${item.url}" data-jobid="${item.job_id}">
             <span class="history-icon">🎬</span>
@@ -1122,6 +1175,33 @@
               urlInput.dispatchEvent(new Event('input'));
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }
+          });
+        });
+
+        // 历史烧录按钮
+        historyList.querySelectorAll('.history-burn-btn').forEach(btn => {
+          btn.addEventListener('click', async e => {
+            e.stopPropagation();
+            const jid = btn.dataset.jobid;
+            btn.textContent = '烧录中...';
+            btn.disabled = true;
+            try {
+              const res = await fetch(`/api/burn/${jid}`, { method: 'POST' });
+              const data = await res.json();
+              if (data.error) { btn.textContent = '失败'; return; }
+              // 轮询等待完成后刷新历史
+              const t = setInterval(async () => {
+                try {
+                  const r2 = await fetch(`/api/job/${jid}`);
+                  if (!r2.ok) return;
+                  const j2 = await r2.json();
+                  if (j2.burn_status === 'done' || j2.burn_status === 'error') {
+                    clearInterval(t);
+                    loadHistory();
+                  }
+                } catch (_) {}
+              }, 1500);
+            } catch (_) { btn.textContent = '失败'; }
           });
         });
       })
