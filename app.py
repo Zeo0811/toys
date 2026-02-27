@@ -68,7 +68,7 @@ jobs_lock = threading.Lock()
 # 工具函数
 # ──────────────────────────────────────────────
 
-def make_job(job_id: str):
+def make_job(job_id: str, url: str = ""):
     with jobs_lock:
         jobs[job_id] = {
             "status": "pending",   # pending | downloading | translating | burning | done | error
@@ -79,6 +79,9 @@ def make_job(job_id: str):
             "filename": None,
             "filepath": None,
             "error": None,
+            "url": url,
+            "created_at": time.time(),
+            "completed_at": None,
         }
 
 
@@ -113,7 +116,7 @@ def clean_old_jobs():
 
 
 # ──────────────────────────────────────────────
-VERSION = "0.7"
+VERSION = "0.8"
 
 # 下载核心
 # ──────────────────────────────────────────────
@@ -434,10 +437,11 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
             title=title,
             filename=output_file.name,
             filepath=str(output_file),
+            completed_at=time.time(),
         )
 
     except Exception as e:
-        update_job(job_id, status="error", error=str(e))
+        update_job(job_id, status="error", error=str(e), completed_at=time.time())
 
 
 # ──────────────────────────────────────────────
@@ -492,7 +496,7 @@ def api_download():
     clean_old_jobs()
 
     job_id = uuid.uuid4().hex
-    make_job(job_id)
+    make_job(job_id, url=url)
 
     thread = threading.Thread(
         target=run_download,
@@ -549,6 +553,26 @@ def api_file(job_id: str):
         as_attachment=True,
         download_name=filename,
     )
+
+
+@app.route("/api/history")
+def api_history():
+    """返回最近 20 条已完成的下载记录"""
+    with jobs_lock:
+        done = [
+            {
+                "job_id": jid,
+                "title": info.get("title", ""),
+                "filename": info.get("filename", ""),
+                "url": info.get("url", ""),
+                "completed_at": info.get("completed_at"),
+                "status": info.get("status"),
+            }
+            for jid, info in jobs.items()
+            if info.get("status") in ("done", "error")
+        ]
+    done.sort(key=lambda x: x.get("completed_at") or 0, reverse=True)
+    return jsonify(done[:20])
 
 
 @app.route("/api/cookies/status")

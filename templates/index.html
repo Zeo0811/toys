@@ -472,6 +472,46 @@
 
     .tip-icon { flex-shrink: 0; margin-top: 1px; }
 
+    /* ── History ── */
+    .history-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .history-item:last-child { border-bottom: none; }
+    .history-item:hover .history-title { color: var(--accent2); }
+
+    .history-icon { font-size: 1.2rem; flex-shrink: 0; }
+
+    .history-info { flex: 1; min-width: 0; }
+
+    .history-title {
+      font-size: .85rem;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: color .15s;
+    }
+
+    .history-meta {
+      font-size: .72rem;
+      color: var(--text2);
+      margin-top: 2px;
+    }
+
+    .history-dl {
+      flex-shrink: 0;
+      font-size: .75rem;
+      color: var(--accent2);
+      white-space: nowrap;
+      text-decoration: none;
+    }
+
     /* ── Spinner ── */
     @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -617,6 +657,12 @@
     </a>
     <button class="btn-new" id="btn-new">继续下载</button>
   </div>
+</div>
+
+<!-- 下载历史 -->
+<div class="card" id="card-history" style="display:none">
+  <div class="section-label">最近下载</div>
+  <div id="history-list"></div>
 </div>
 
 <!-- 使用提示 -->
@@ -935,6 +981,63 @@
   });
 
   refreshCookieStatus();
+
+  // ── 下载历史 ──
+  const cardHistory = document.getElementById('card-history');
+  const historyList = document.getElementById('history-list');
+
+  function formatTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts * 1000);
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) {
+      return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    }
+    return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) + ' ' +
+           d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function loadHistory() {
+    fetch('/api/history')
+      .then(r => r.json())
+      .then(list => {
+        const done = list.filter(x => x.status === 'done');
+        if (!done.length) { cardHistory.style.display = 'none'; return; }
+        cardHistory.style.display = '';
+        historyList.innerHTML = done.map(item => `
+          <div class="history-item" data-url="${item.url}" data-jobid="${item.job_id}">
+            <span class="history-icon">🎬</span>
+            <div class="history-info">
+              <div class="history-title">${item.title || item.filename || '未知'}</div>
+              <div class="history-meta">${formatTime(item.completed_at)}</div>
+            </div>
+            <a class="history-dl" href="/api/file/${item.job_id}" download="${item.filename || 'video'}">↓ 重新保存</a>
+          </div>
+        `).join('');
+
+        historyList.querySelectorAll('.history-item').forEach(el => {
+          el.addEventListener('click', e => {
+            if (e.target.closest('.history-dl')) return;
+            const url = el.dataset.url;
+            if (url) {
+              urlInput.value = url;
+              urlInput.dispatchEvent(new Event('input'));
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          });
+        });
+      })
+      .catch(() => {});
+  }
+
+  // 初始加载历史，下载完成后刷新
+  loadHistory();
+
+  const _origShowResult = showResult;
+  showResult = function(jobId, title, filename) {
+    _origShowResult(jobId, title, filename);
+    setTimeout(loadHistory, 500);
+  };
 </script>
 </body>
 </html>
