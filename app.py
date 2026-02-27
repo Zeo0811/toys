@@ -125,10 +125,10 @@ VERSION = "0.8"
 # 不加 ext 限制，避免某些视频因无 mp4 流而误报"格式不可用"
 # 用 format_sort 在 ydl_opts 中表达 mp4 偏好，不影响兜底逻辑
 FORMAT_MAP = {
-    "best":  "bestvideo+bestaudio/best",
-    "1080p": "bestvideo[height<=1080]+bestaudio/best",
-    "720p":  "bestvideo[height<=720]+bestaudio/best",
-    "480p":  "bestvideo[height<=480]+bestaudio/best",
+    "best":  "bestvideo+bestaudio/bestvideo/best",
+    "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best",
+    "720p":  "bestvideo[height<=720]+bestaudio/best[height<=720]/bestvideo+bestaudio/best",
+    "480p":  "bestvideo[height<=480]+bestaudio/best[height<=480]/bestvideo+bestaudio/best",
     "audio": "bestaudio/best",
 }
 
@@ -377,11 +377,11 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
             title = _do_download(ydl_opts)
         except Exception as e:
             if "Requested format is not available" in str(e):
-                # 清空临时文件，用最简格式兜底重试
+                # 清空临时文件，用最简格式兜底重试（不附加任何画质限制）
                 for f in job_dir.iterdir():
                     f.unlink(missing_ok=True)
                 update_job(job_id, status="downloading", progress=0)
-                fallback_opts = {**ydl_opts, "format": "bestvideo+bestaudio/best"}
+                fallback_opts = {**ydl_opts, "format": "best", "format_sort": []}
                 title = _do_download(fallback_opts)
             else:
                 raise
