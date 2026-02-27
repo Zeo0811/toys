@@ -267,10 +267,13 @@ def _convert_vtt_to_srt(vtt_path: Path) -> Path:
 
 
 def _fix_srt_overlaps(srt_path: Path) -> Path:
-    """修复 SRT 字幕时间戳重叠，确保每条字幕开始时间不早于上一条结束时间。"""
+    """
+    修复 SRT 字幕时间戳重叠，使字幕与语音同步、单行不叠加。
+    策略：截断上一条字幕的结束时间到下一条的开始时间，而非推迟下一条，
+    保证每条字幕与实际语音时间对齐。
+    """
     content = srt_path.read_text(encoding="utf-8", errors="replace")
     entries = re.split(r"\n\s*\n", content.strip())
-    fixed, prev_end_ms = [], 0
 
     def _ms(ts: str) -> int:
         m = re.match(r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})", ts)
@@ -285,21 +288,39 @@ def _fix_srt_overlaps(srt_path: Path) -> Path:
         s = ms // 1000;    ms %= 1000
         return f"{h:02d}:{mn:02d}:{s:02d},{ms:03d}"
 
+    # 第一遍：解析所有条目
+    parsed = []
     for entry in entries:
         lines = entry.strip().splitlines()
         if len(lines) < 3:
             continue
         tc = re.match(r"(\S+)\s*-->\s*(\S+)", lines[1])
         if not tc:
-            fixed.append(entry)
+            parsed.append({"num": None, "start": None, "end": None, "text": entry})
             continue
-        start_ms, end_ms = _ms(tc.group(1)), _ms(tc.group(2))
-        if start_ms < prev_end_ms:
-            start_ms = prev_end_ms + 50
-            if start_ms >= end_ms:
-                end_ms = start_ms + 1000
-        prev_end_ms = end_ms
-        fixed.append(f"{lines[0]}\n{_fmt(start_ms)} --> {_fmt(end_ms)}\n" + "\n".join(lines[2:]))
+        parsed.append({
+            "num": lines[0],
+            "start": _ms(tc.group(1)),
+            "end": _ms(tc.group(2)),
+            "text": "\n".join(lines[2:]),
+        })
+
+    # 第二遍：截断上一条的结束时间，保证不与下一条重叠
+    for i in range(len(parsed) - 1):
+        cur, nxt = parsed[i], parsed[i + 1]
+        if cur["start"] is None or nxt["start"] is None:
+            continue
+        if cur["end"] > nxt["start"]:
+            cur["end"] = nxt["start"]  # 截断，不推迟
+            if cur["end"] <= cur["start"]:
+                cur["end"] = cur["start"] + 100  # 保留最短 100ms
+
+    fixed = []
+    for item in parsed:
+        if item["start"] is None:
+            fixed.append(item["text"])
+        else:
+            fixed.append(f"{item['num']}\n{_fmt(item['start'])} --> {_fmt(item['end'])}\n{item['text']}")
 
     srt_path.write_text("\n\n".join(fixed) + "\n", encoding="utf-8")
     return srt_path
@@ -588,10 +609,13 @@ def run_download(job_id: str, url: str, quality: str, burn_subtitle: bool = Fals
                 if sub_file.suffix.lower() == ".vtt":
                     sub_file = _convert_vtt_to_srt(sub_file)
 
-                # 如果不是中文字幕，翻译
+                # 如果不是中文字幕，翻译（内部会调用 _fix_srt_overlaps）
                 if not _is_chinese_subtitle(sub_file):
                     update_job(job_id, status="translating", progress=99)
                     sub_file = _translate_srt_to_chinese(sub_file)
+                else:
+                    # 中文字幕跳过翻译，但同样需要修复重叠
+                    sub_file = _fix_srt_overlaps(sub_file)
 
                 # 烧录到独立文件（保留原视频）
                 update_job(job_id, status="burning", progress=0)
