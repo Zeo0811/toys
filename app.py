@@ -60,7 +60,9 @@ def _get_base_opts() -> dict:
         "nocheckcertificate": True,
         "extractor_args": {
             "youtube": {
-                "player_client": ["tv_embedded", "web"],
+                # tv_embedded / android_creator：均支持 DASH 高清流，无需 n-challenge JS 解析
+                # 严禁加入 web 客户端：web 需要 n-challenge，无 Node.js 时全部格式失效
+                "player_client": ["tv_embedded", "android_creator"],
             }
         },
     }
