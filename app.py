@@ -127,7 +127,7 @@ def clean_old_jobs():
 
 
 # ──────────────────────────────────────────────
-VERSION = "0.8"
+VERSION = "0.9"
 
 # 下载核心
 # ──────────────────────────────────────────────
@@ -181,9 +181,49 @@ def _convert_vtt_to_srt(vtt_path: Path) -> Path:
     return srt_path if srt_path.exists() else vtt_path
 
 
+def _fix_srt_overlaps(srt_path: Path) -> Path:
+    """修复 SRT 字幕时间戳重叠，确保每条字幕开始时间不早于上一条结束时间。"""
+    content = srt_path.read_text(encoding="utf-8", errors="replace")
+    entries = re.split(r"\n\s*\n", content.strip())
+    fixed, prev_end_ms = [], 0
+
+    def _ms(ts: str) -> int:
+        m = re.match(r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})", ts)
+        if not m:
+            return 0
+        h, mn, s, ms = map(int, m.groups())
+        return (h * 3600 + mn * 60 + s) * 1000 + ms
+
+    def _fmt(ms: int) -> str:
+        h = ms // 3600000; ms %= 3600000
+        mn = ms // 60000;  ms %= 60000
+        s = ms // 1000;    ms %= 1000
+        return f"{h:02d}:{mn:02d}:{s:02d},{ms:03d}"
+
+    for entry in entries:
+        lines = entry.strip().splitlines()
+        if len(lines) < 3:
+            continue
+        tc = re.match(r"(\S+)\s*-->\s*(\S+)", lines[1])
+        if not tc:
+            fixed.append(entry)
+            continue
+        start_ms, end_ms = _ms(tc.group(1)), _ms(tc.group(2))
+        if start_ms < prev_end_ms:
+            start_ms = prev_end_ms + 50
+            if start_ms >= end_ms:
+                end_ms = start_ms + 1000
+        prev_end_ms = end_ms
+        fixed.append(f"{lines[0]}\n{_fmt(start_ms)} --> {_fmt(end_ms)}\n" + "\n".join(lines[2:]))
+
+    srt_path.write_text("\n\n".join(fixed) + "\n", encoding="utf-8")
+    return srt_path
+
+
 def _translate_srt_to_chinese(srt_path: Path) -> Path:
     """
-    将 SRT 字幕翻译为简体中文。
+    将 SRT 字幕翻译为简体中文，使用 Google Translate（deep-translator）。
+    翻译后自动修复时间戳重叠。
     返回翻译后的 SRT 文件路径；如遇任何错误则返回原始路径。
     """
     try:
@@ -196,7 +236,6 @@ def _translate_srt_to_chinese(srt_path: Path) -> Path:
     except Exception:
         return srt_path
 
-    # 解析 SRT：提取 (序号行, 时间轴行, 文本行)
     block_re = re.compile(
         r"(\d+)\s*\n"
         r"(\d{2}:\d{2}:\d{2}[,\.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*\n"
@@ -208,8 +247,6 @@ def _translate_srt_to_chinese(srt_path: Path) -> Path:
         return srt_path
 
     texts = [m.group(3).strip() for m in matches]
-
-    # 分批翻译（每批最多 15 段，用罕见分隔符拼接）
     SEPARATOR = "\n◆◆◆\n"
     BATCH_SIZE = 15
     translated: list[str] = [""] * len(texts)
@@ -217,21 +254,16 @@ def _translate_srt_to_chinese(srt_path: Path) -> Path:
     for start in range(0, len(texts), BATCH_SIZE):
         batch = texts[start: start + BATCH_SIZE]
         combined = SEPARATOR.join(batch)
-
-        # 若拼合后超长，逐条翻译
         if len(combined) > 4500:
             for i, text in enumerate(batch):
                 try:
-                    t = GoogleTranslator(source="auto", target="zh-CN").translate(
-                        text[:4000]
-                    )
+                    t = GoogleTranslator(source="auto", target="zh-CN").translate(text[:4000])
                     translated[start + i] = t or text
                 except Exception:
                     translated[start + i] = text
         else:
             try:
                 result = GoogleTranslator(source="auto", target="zh-CN").translate(combined)
-                # 按分隔符切回（允许翻译后分隔符有轻微变化）
                 parts = re.split(r"◆+", result or "")
                 for i, part in enumerate(parts):
                     if i < len(batch):
@@ -240,40 +272,37 @@ def _translate_srt_to_chinese(srt_path: Path) -> Path:
                 for i, text in enumerate(batch):
                     translated[start + i] = text
 
-        # 填补空缺
         for i in range(start, min(start + BATCH_SIZE, len(texts))):
             if not translated[i]:
                 translated[i] = texts[i]
+        time.sleep(0.3)
 
-        time.sleep(0.3)  # 避免请求过于密集
-
-    # 重建 SRT
     out_blocks = [
         f"{m.group(1)}\n{m.group(2)}\n{translated[i]}\n"
         for i, m in enumerate(matches)
     ]
     out_path = srt_path.parent / (srt_path.stem + ".zh.srt")
     out_path.write_text("\n".join(out_blocks), encoding="utf-8")
-    return out_path
+    return _fix_srt_overlaps(out_path)
 
 
 def _burn_subtitle(video_path: Path, sub_path: Path, output_path: Path) -> None:
-    """用 ffmpeg 将字幕硬烧录到视频。"""
-    # 将字幕复制为简单文件名，避免路径特殊字符影响 ffmpeg 过滤器
+    """用 ffmpeg 将字幕硬烧录到视频（需要 libass + Noto CJK 字体）。"""
     simple_sub = video_path.parent / "burn_sub.srt"
     shutil.copy(str(sub_path), str(simple_sub))
-
-    # 使用绝对路径，避免 ffmpeg 内部路径解析与 cwd 不一致的问题
-    # ffmpeg filtergraph 中冒号需转义（Linux 路径通常无冒号，但防御性处理）
     abs_sub = str(simple_sub.resolve()).replace("\\", "\\\\").replace(":", "\\:")
 
+    # 使用 Noto Sans CJK SC 确保中文字符正确渲染
+    # fonts-noto-cjk 已在 Dockerfile/render.yaml 中安装
     style = (
-        "FontSize=26,"
+        "FontName=Noto Sans CJK SC,"
+        "FontSize=24,"
         "PrimaryColour=&H00ffffff,"
         "OutlineColour=&H00000000,"
         "Outline=2,"
         "Shadow=1,"
-        "Bold=0"
+        "Bold=0,"
+        "MarginV=20"
     )
     cmd = [
         "ffmpeg", "-y",
@@ -285,11 +314,11 @@ def _burn_subtitle(video_path: Path, sub_path: Path, output_path: Path) -> None:
         "-crf", "23",
         str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True, cwd=str(video_path.parent))
     simple_sub.unlink(missing_ok=True)
     if result.returncode != 0:
         raise RuntimeError(
-            "ffmpeg 字幕烧录失败：" + result.stderr.decode(errors="replace")[-600:]
+            "ffmpeg 字幕烧录失败：" + result.stderr.decode(errors="replace")[-800:]
         )
 
 
@@ -600,36 +629,21 @@ def api_cookies_delete():
     return jsonify({"ok": True})
 
 
-@app.route("/api/cookies/from-browser", methods=["POST"])
-def api_cookies_from_browser():
-    data = request.get_json(silent=True) or {}
-    browser = data.get("browser", "").lower().strip()
-    supported = ["chrome", "firefox", "edge", "brave", "opera", "chromium", "vivaldi"]
-    if browser not in supported:
-        return jsonify({"error": f"不支持的浏览器：{browser}"}), 400
-
+@app.route("/api/cookies/check", methods=["POST"])
+def api_cookies_check():
+    """验证 cookies 是否仍然有效（用一个简短的 YouTube 请求测试）。"""
+    if not COOKIES_FILE.exists():
+        return jsonify({"valid": False, "reason": "未上传 Cookie"})
     try:
-        ydl_opts = {
-            "cookiesfrombrowser": (browser, None, None, None),
-            "cookiefile": str(COOKIES_FILE),
-            "quiet": True,
-            "no_warnings": True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl._setup_opener()
-            jar = ydl.cookiejar
-            if hasattr(jar, "save"):
-                jar.save(ignore_discard=True, ignore_expires=True)
-        return jsonify({"ok": True})
+        opts = {**_get_base_opts(), "skip_download": True, "quiet": True, "no_warnings": True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info("https://www.youtube.com/watch?v=BjUShsxq4wU", download=False)
+        return jsonify({"valid": True})
     except Exception as e:
-        error_msg = str(e)
-        # Improve error messages for common issues
-        if "could not find" in error_msg.lower() and "cookies" in error_msg.lower():
-            if browser in ["chrome", "chromium"]:
-                return jsonify({"error": f"找不到 {browser.capitalize()} Cookie。请确保已安装并使用过此浏览器，或尝试使用 Firefox"}), 400
-        elif "keyring" in error_msg.lower():
-            return jsonify({"error": "Chrome 密钥环问题（Linux）。请尝试使用 Firefox"}), 400
-        return jsonify({"error": error_msg}), 500
+        msg = str(e)
+        if "Sign in" in msg or "bot" in msg.lower():
+            return jsonify({"valid": False, "reason": "Cookie 已失效，请重新上传"})
+        return jsonify({"valid": True})  # 其他错误不代表 cookie 无效
 
 
 if __name__ == "__main__":

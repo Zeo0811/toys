@@ -1,6 +1,6 @@
 # Railway 部署配置：安装 ffmpeg 用于音视频合并
 [phases.setup]
-nixPkgs = ["python312", "ffmpeg"]
+nixPkgs = ["python312", "ffmpeg", "noto-fonts-cjk"]
 
 [phases.install]
 cmds = ["python3 -m pip install -r requirements.txt"]
