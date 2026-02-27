@@ -167,7 +167,7 @@
       margin-top: 3px;
     }
 
-    /* ── Quality Selector ── */
+    /* ── Section Label (cookie/history) ── */
     .section-label {
       font-size: .8rem;
       color: var(--text2);
@@ -176,44 +176,6 @@
       text-transform: uppercase;
       margin-bottom: 10px;
     }
-
-    .quality-grid {
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
-      gap: 8px;
-    }
-
-    .q-btn {
-      background: var(--surface2);
-      border: 1.5px solid var(--border);
-      border-radius: 10px;
-      padding: 10px 4px;
-      text-align: center;
-      cursor: pointer;
-      transition: all .2s;
-      user-select: none;
-    }
-
-    .q-btn .qlabel {
-      font-size: .85rem;
-      font-weight: 700;
-      display: block;
-    }
-
-    .q-btn .qsub {
-      font-size: .65rem;
-      color: var(--text2);
-      display: block;
-      margin-top: 2px;
-    }
-
-    .q-btn.active {
-      background: rgba(124,106,247,.15);
-      border-color: var(--accent);
-      color: var(--accent2);
-    }
-
-    .q-btn.active .qsub { color: var(--accent2); opacity: .7; }
 
     /* ── Download Button ── */
     #btn-download {
@@ -557,32 +519,6 @@
   <div id="error-wrap"></div>
 </div>
 
-<!-- 画质选择卡片 -->
-<div class="card">
-  <div class="section-label">选择画质</div>
-  <div class="quality-grid">
-    <div class="q-btn" data-q="best">
-      <span class="qlabel">最佳</span>
-      <span class="qsub">自动</span>
-    </div>
-    <div class="q-btn active" data-q="1080p">
-      <span class="qlabel">1080p</span>
-      <span class="qsub">全高清</span>
-    </div>
-    <div class="q-btn" data-q="720p">
-      <span class="qlabel">720p</span>
-      <span class="qsub">高清</span>
-    </div>
-    <div class="q-btn" data-q="480p">
-      <span class="qlabel">480p</span>
-      <span class="qsub">标清</span>
-    </div>
-    <div class="q-btn" data-q="audio">
-      <span class="qlabel">MP3</span>
-      <span class="qsub">仅音频</span>
-    </div>
-  </div>
-</div>
 
 <!-- 字幕烧录选项 -->
 <div class="card" id="card-subtitle">
@@ -676,7 +612,7 @@
 
 <script>
   // ── 状态 ──
-  let selectedQuality = '1080p';
+  const selectedQuality = 'best';
   let currentJobId = null;
   let sseSource = null;
   let infoTimer = null;
@@ -708,23 +644,6 @@
     subtitleToggle.classList.toggle('active', subtitleCheck.checked);
   });
 
-  // ── 画质选择 ──
-  document.querySelectorAll('.q-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.q-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      selectedQuality = btn.dataset.q;
-      // 音频模式禁用字幕烧录
-      const isAudio = selectedQuality === 'audio';
-      subtitleCheck.disabled = isAudio;
-      subtitleToggle.style.opacity = isAudio ? '0.4' : '1';
-      subtitleToggle.style.cursor = isAudio ? 'not-allowed' : 'pointer';
-      if (isAudio) {
-        subtitleCheck.checked = false;
-        subtitleToggle.classList.remove('active');
-      }
-    });
-  });
 
   // ── 粘贴 ──
   btnPaste.addEventListener('click', async () => {
