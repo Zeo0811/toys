@@ -52,11 +52,10 @@ def _get_base_opts() -> dict:
     """
     动态构建 yt-dlp 基础选项。
 
-    客户端选择原则：
-    - mweb：支持 DASH 音视频分离流，无需 PO Token，接受 cookies 认证（首选）
-    - ios：不需要 PO Token，作为备选
-    - web：需要 PO Token 才能访问 DASH 流，仅作最终兜底
-    cookies 有效性与客户端无关，有就传。
+    客户端选择：
+    - tv_embedded：提供完整 DASH 流（最高 4K），无需 PO Token，支持 cookies 认证
+    - web：作兜底，有 PO Token 时可用
+    mweb/ios 不提供 DASH 分离流，不能用于高清下载，已排除。
     """
     opts: dict = {
         "quiet": True,
@@ -64,7 +63,7 @@ def _get_base_opts() -> dict:
         "nocheckcertificate": True,
         "extractor_args": {
             "youtube": {
-                "player_client": ["mweb", "ios", "web"],
+                "player_client": ["tv_embedded", "web"],
             }
         },
     }
