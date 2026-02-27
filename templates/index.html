@@ -286,6 +286,43 @@
 
     #btn-save:active { transform: scale(.97); }
 
+    #btn-save-burned {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 14px;
+      padding: 14px 28px;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity .2s, transform .1s;
+      text-decoration: none;
+      margin-top: 10px;
+    }
+
+    #btn-save-burned:active { transform: scale(.97); }
+
+    .result-downloads {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    #burn-error {
+      font-size: .78rem;
+      color: #fca5a5;
+      background: rgba(239,68,68,.08);
+      border: 1px solid rgba(239,68,68,.25);
+      border-radius: 10px;
+      padding: 8px 12px;
+      margin-top: 10px;
+      text-align: left;
+    }
+
     .btn-new {
       display: block;
       margin: 12px auto 0;
@@ -580,14 +617,25 @@
     <div class="result-icon">✅</div>
     <div class="result-title" id="result-title">下载完成！</div>
     <div class="result-sub">点击下方按钮保存到设备</div>
-    <a id="btn-save" href="#" download>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-        <polyline points="7 10 12 15 17 10"/>
-        <line x1="12" y1="15" x2="12" y2="3"/>
-      </svg>
-      保存到设备
-    </a>
+    <div class="result-downloads">
+      <a id="btn-save" href="#" download>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        <span id="btn-save-label">保存到设备</span>
+      </a>
+      <a id="btn-save-burned" href="#" download style="display:none">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        字幕烧录版
+      </a>
+      <div id="burn-error" style="display:none"></div>
+    </div>
     <button class="btn-new" id="btn-new">继续下载</button>
   </div>
 </div>
@@ -632,6 +680,9 @@
   const etaText       = document.getElementById('eta-text');
   const resultTitle   = document.getElementById('result-title');
   const btnSave       = document.getElementById('btn-save');
+  const btnSaveLabel  = document.getElementById('btn-save-label');
+  const btnSaveBurned = document.getElementById('btn-save-burned');
+  const burnErrorEl   = document.getElementById('burn-error');
   const btnNew        = document.getElementById('btn-new');
   const subtitleCheck = document.getElementById('subtitle-check');
   const subtitleToggle= document.getElementById('subtitle-toggle');
@@ -742,14 +793,14 @@
         speedText.textContent = '';
         etaText.textContent   = '';
       } else if (job.status === 'burning') {
-        setProgress(99, '烧录字幕中...');
+        setProgress(job.progress, '烧录字幕中...');
         speedText.textContent = '';
         etaText.textContent   = '';
       } else if (job.status === 'done') {
         finished = true;
         sseSource.close();
         setProgress(100, '完成');
-        setTimeout(() => showResult(jobId, job.title, job.filename), 400);
+        setTimeout(() => showResult(jobId, job), 400);
       } else if (job.status === 'error') {
         finished = true;
         sseSource.close();
@@ -772,13 +823,32 @@
     };
   }
 
-  function showResult(jobId, title, filename) {
+  function showResult(jobId, job) {
     setDownloading(false);
     progressWrap.classList.remove('show');
     resultWrap.classList.add('show');
-    resultTitle.textContent = title ? `《${title}》` : '下载完成！';
-    btnSave.href = `/api/file/${jobId}`;
-    btnSave.download = filename || 'video.mp4';
+    resultTitle.textContent = job.title ? `《${job.title}》` : '下载完成！';
+
+    const origFilename = job.original_filename || job.filename || 'video.mp4';
+    btnSave.href = `/api/file/${jobId}/original`;
+    btnSave.download = origFilename;
+
+    if (job.burned_filename) {
+      btnSaveLabel.textContent = '原始视频';
+      btnSaveBurned.href = `/api/file/${jobId}/burned`;
+      btnSaveBurned.download = job.burned_filename;
+      btnSaveBurned.style.display = 'inline-flex';
+    } else {
+      btnSaveLabel.textContent = '保存到设备';
+      btnSaveBurned.style.display = 'none';
+    }
+
+    if (job.burn_error) {
+      burnErrorEl.textContent = '⚠️ ' + job.burn_error;
+      burnErrorEl.style.display = 'block';
+    } else {
+      burnErrorEl.style.display = 'none';
+    }
   }
 
   // ── 继续下载 ──
@@ -792,6 +862,9 @@
     currentJobId = null;
     subtitleCheck.checked = false;
     subtitleToggle.classList.remove('active');
+    btnSaveBurned.style.display = 'none';
+    burnErrorEl.style.display = 'none';
+    btnSaveLabel.textContent = '保存到设备';
     urlInput.focus();
   });
 
@@ -819,14 +892,16 @@
   }
 
   // iOS Safari：长按保存提示
-  btnSave.addEventListener('click', () => {
+  function iosDownloadAlert() {
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
     if (isIOS) {
       setTimeout(() => {
         alert('提示：文件已下载到"文件"App，可从文件 App 保存到相册。');
       }, 1000);
     }
-  });
+  }
+  btnSave.addEventListener('click', iosDownloadAlert);
+  btnSaveBurned.addEventListener('click', iosDownloadAlert);
 
   // ── Cookie 管理 ──
   const cookieStatusIcon = document.getElementById('cookie-status-icon');
@@ -915,16 +990,21 @@
         const done = list.filter(x => x.status === 'done');
         if (!done.length) { cardHistory.style.display = 'none'; return; }
         cardHistory.style.display = '';
-        historyList.innerHTML = done.map(item => `
+        historyList.innerHTML = done.map(item => {
+          const dlLinks = item.burned_filename
+            ? `<a class="history-dl" href="/api/file/${item.job_id}/original" download="${item.filename || 'video'}">↓ 原始</a>
+               <a class="history-dl" href="/api/file/${item.job_id}/burned" download="${item.burned_filename}" style="margin-left:6px">↓ 烧录</a>`
+            : `<a class="history-dl" href="/api/file/${item.job_id}/original" download="${item.filename || 'video'}">↓ 重新保存</a>`;
+          return `
           <div class="history-item" data-url="${item.url}" data-jobid="${item.job_id}">
             <span class="history-icon">🎬</span>
             <div class="history-info">
               <div class="history-title">${item.title || item.filename || '未知'}</div>
               <div class="history-meta">${formatTime(item.completed_at)}</div>
             </div>
-            <a class="history-dl" href="/api/file/${item.job_id}" download="${item.filename || 'video'}">↓ 重新保存</a>
-          </div>
-        `).join('');
+            <div style="flex-shrink:0">${dlLinks}</div>
+          </div>`;
+        }).join('');
 
         historyList.querySelectorAll('.history-item').forEach(el => {
           el.addEventListener('click', e => {
@@ -945,8 +1025,8 @@
   loadHistory();
 
   const _origShowResult = showResult;
-  showResult = function(jobId, title, filename) {
-    _origShowResult(jobId, title, filename);
+  showResult = function(jobId, job) {
+    _origShowResult(jobId, job);
     setTimeout(loadHistory, 500);
   };
 </script>
