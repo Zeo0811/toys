@@ -584,17 +584,17 @@
 
 <!-- 字幕烧录选项 -->
 <div class="card" id="card-subtitle">
-  <label class="subtitle-toggle" id="subtitle-toggle" for="subtitle-check">
-    <div class="st-label">
+  <div class="subtitle-toggle" id="subtitle-toggle">
+    <div class="st-label" onclick="document.getElementById('subtitle-check').click()" style="cursor:pointer">
       <span class="st-title">🀄 中文字幕烧录</span>
       <span class="st-desc">下载字幕 → 翻译为中文 → 硬烧录到视频</span>
     </div>
-    <label class="switch" onclick="event.stopPropagation()">
+    <label class="switch">
       <input type="checkbox" id="subtitle-check" />
       <span class="switch-track"></span>
       <span class="switch-thumb"></span>
     </label>
-  </label>
+  </div>
 </div>
 
 <!-- Cookie 轮询池卡片 -->
