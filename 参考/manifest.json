@@ -1,0 +1,67 @@
+{
+"update_url": "https://clients2.google.com/service/update2/crx",
+
+  "manifest_version": 3,
+  "name": "Notion Converter：公众号一键排版复制，一键复制为markdown",
+  "version": "2.0.10",
+  "description": "帮你将Notion一键排版复制到微信公众号，支持一键复制为markdown",
+  "icons": {
+    "16": "imgs/N.png",
+    "32": "imgs/N.png",
+    "48": "imgs/N.png",
+    "128": "imgs/N.png"
+  },
+  "action": {
+    "default_title": "NotionConverter：公众号一键排版复制，一键复制为markdown"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.notion.so/*"],
+      "js": [
+        "lib/jquery-3.6.1.min.js",
+        "lib/highlight.min.js",
+        "lib/highlight.min.js",
+        "lib/bootstrap.bundle.min.js",
+        "lib/repeat-string.js",
+        "lib/markdown-table.js",
+        "lib/fontawesome.js",
+        "lib/html-dom-parser.min.js",
+        "lib/crypto-js.min.js",
+        "templatePost.js",
+        "html.js",
+        "codeBlockTheme.js",
+        "common.js",
+        "uuid.js",
+        "style.js",
+        "fonts.js",
+        "cosUtil.js",
+        "mixpanelUtil.js",
+        "markdownRender.js",
+        "wechatRender.js",
+        "parser.js",
+        "options_page.js",
+        "content_script.js",
+        "cache.js"
+      ],
+      "css": ["lib/bootstrap.min.css", "content_script.css"],
+      "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "lib/jquery-3.6.1.min.js",
+        "lib/fontawesome.js",
+        "imgs/loading.gif",
+        "imgs/N.png",
+        "imgs/upgrade.png"
+      ],
+      "matches": ["https://*.notion.so/*"]
+    }
+  ],
+  "permissions": ["storage", "activeTab"],
+  "options_page": "options_page.html"
+}

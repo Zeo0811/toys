@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src *; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' data: https:">
+  <title>Notion converter</title>
+  <link href="lib/bootstrap.min.css" rel="stylesheet" type="text/css">
+  <style>
+    body {
+      padding-top: 20px;
+      background-color: #f4f4f4;
+      color: white;
+    }
+
+    .container h2, .container p {
+      color: #55534E;
+    }
+
+    .container .pay-time-btn {
+      width: 80px;
+      border: none;
+      background-color: #07C160;
+    }
+
+    .container .pay-time-btn:focus {
+      background-color: #07C160;
+    }
+
+    .container .price-card {
+      padding: 30px;
+      border-radius: 12px;
+      min-height: 420px;
+    }
+
+    .container .free-price-card {
+      background-color: #55534E;
+    }
+
+    .container .pro-price-card {
+      background-color: #07C160;
+    }
+
+    .container .price-card .pay-btn {
+      width: 100%;
+      background-color: #6610f2;
+      color: white;
+    }
+
+    .container .pro-price-card .pay-btn {
+      width: 100%;
+      background-color: white;
+      color: black;
+    }
+
+    .container .price-card .pay-btn-row {
+      margin-top: 30px;
+    }
+
+    .container .price-card-area {
+      margin-top: 30px;
+    }
+  </style>
+</head>
+<body>
+<div class="container text-center">
+  <div class="header">
+    <div class="row" style="margin: 20px 0">
+      <div class="col">
+        <h2>会员价格</h2>
+      </div>
+    </div>
+    <div class="row justify-content-center">
+      <div class="col-auto">
+        <button class="btn btn-primary pay-time-btn pay-month-btn">月费</button>
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-primary pay-time-btn pay-year-btn">年费</button>
+      </div>
+    </div>
+    <div class="row text-start price-card-area justify-content-center">
+      <div class="col-4">
+        <div class="price-card free-price-card">
+          <div class="price-card-header">
+            <h4>免费用户</h4>
+            <h5>0￥</h5>
+          </div>
+          <div class="price-card-content">
+            <div class="row gy-3">
+              <div class="col-12">
+                <img src="imgs/yes.svg" width="20"/>
+                字体选择
+              </div>
+              <div class="col-12">
+                <img src="imgs/yes.svg" width="20"/>
+                字号大小选择
+              </div>
+              <div class="col-12">
+                <img src="imgs/yes.svg" width="20"/>
+                公众号默认排版
+              </div>
+              <div class="col-12">
+                <img src="imgs/no.svg" width="20"/>
+                公众号会员主题
+              </div>
+              <div class="col-12">
+                <img src="imgs/no.svg" width="20"/>
+                图片预览5张/篇
+              </div>
+              <div class="col-12">
+                <img src="imgs/no.svg" width="20"/>
+                复制为Markdown
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-4">
+        <div class="price-card pro-price-card">
+          <div class="price-card-header">
+            <h4>高级用户</h4>
+            <h5 class="pro-price-display">12.9￥/月</h5>
+          </div>
+          <div class="price-card-content">
+            <div class="row gy-3">
+              <div class="col-12">
+                <img src="imgs/yes.svg" width="20"/>
+                字体选择
+              </div>
+              <div class="col-12">
+                <img src="imgs/yes.svg" width="20"/>
+                字号大小选择
+              </div>
+              <div class="col-12">
+                <img src="imgs/yes.svg" width="20"/>
+                公众号默认排版
+              </div>
+              <div class="col-12">
+                <img src="imgs/yes.svg" width="20"/>
+                公众号会员主题
+              </div>
+              <div class="col-12">
+                <img src="imgs/yes.svg" width="20"/>
+                图片预览无限制
+              </div>
+              <div class="col-12">
+                <img src="imgs/yes.svg" width="20"/>
+                复制为Markdown
+              </div>
+            </div>
+            <div class="row pay-btn-row">
+              <div class="col">
+                <button class="btn pay-btn" vip-type="ALL">支付</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal fade" id="qrcodeModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h1 class="modal-title fs-5" id="exampleModalLabel">请使用支付宝扫码支付</h1>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" style="text-align: center">
+        <img src="" alt="qrcode" class="qrcode">
+        <p class="price" style="text-align: center;color: black"></p>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
+<script src="lib/jquery-3.6.1.min.js" type="text/javascript"></script>
+<script src="lib/md5.min.js" type="text/javascript"></script>
+<script src="lib/bootstrap.bundle.min.js" type="text/javascript"></script>
+<script src="common.js" type="text/javascript"></script>
+<script src="options_page.js" type="text/javascript"></script>
