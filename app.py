@@ -845,8 +845,6 @@ def api_burn(job_id: str):
     job = get_job(job_id)
     if not job:
         return jsonify({"error": "任务不存在或已过期"}), 404
-    if job.get("user_id") and job.get("user_id") != g.uid:
-        return jsonify({"error": "无权访问"}), 403
     if job.get("status") != "done":
         return jsonify({"error": "视频尚未下载完成"}), 400
     burn_status = job.get("burn_status", "idle")
@@ -1023,9 +1021,6 @@ def api_job(job_id: str):
     job = get_job(job_id)
     if not job:
         return jsonify({"error": "任务不存在或已过期"}), 404
-    # 只允许任务归属用户访问（user_id 为空则不限制，兼容旧任务）
-    if job.get("user_id") and job.get("user_id") != g.uid:
-        return jsonify({"error": "无权访问"}), 403
     return jsonify({**job, "job_id": job_id})
 
 
