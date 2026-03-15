@@ -587,8 +587,15 @@
   </div>
   <div id="cookie-import-msg" style="margin-top:6px;font-size:12px;display:none"></div>
   <div style="margin-top:8px;font-size:12px;color:var(--text2)">
-    Cookie 失效时自动移除，无法手动删除。多个 Cookie 轮流使用降低封号风险。
-    <a href="https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp" target="_blank" style="color:#7c9ef8">如何导出 cookies.txt</a>
+    Cookie 失效时自动移除。多个 Cookie 轮流使用降低封号风险。<br>
+    <span style="display:inline-block;margin-top:6px;font-weight:600;color:var(--text)">导出 cookies.txt（任选一种）：</span>
+    <div style="margin-top:5px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-family:monospace;font-size:11px;color:#a0f0b0;user-select:all">
+      # Chrome<br>
+      yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download "https://youtube.com"<br><br>
+      # Firefox<br>
+      yt-dlp --cookies-from-browser firefox --cookies cookies.txt --skip-download "https://youtube.com"
+    </div>
+    <div style="margin-top:4px;color:var(--text2)">运行后将生成的 <code style="background:var(--surface2);padding:1px 5px;border-radius:4px">cookies.txt</code> 上传到上方即可。</div>
   </div>
 </div>
 
