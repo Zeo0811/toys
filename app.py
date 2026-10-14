@@ -7,7 +7,6 @@
 
 import os
 import re
-import sys
 import uuid
 import json
 import time
@@ -17,22 +16,7 @@ import subprocess
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, Response, send_file, g
 
-# 自动安装/升级依赖
-def ensure_deps():
-    # yt-dlp 必须保持最新，旧版本会导致格式识别失败
-    print("正在升级 yt-dlp ...")
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
-        stdout=subprocess.DEVNULL,
-    )
-    for package, import_name in [("flask", "flask"), ("deep-translator", "deep_translator")]:
-        try:
-            __import__(import_name)
-        except ImportError:
-            print(f"正在安装 {package} ...")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-ensure_deps()
+# 依赖由构建阶段安装，避免启动时联网安装失败导致服务无法启动。
 
 import yt_dlp
 
